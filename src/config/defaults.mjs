@@ -69,6 +69,14 @@ export const CONFIG = Object.freeze({
     pollIntervalMs: 5000,        // Kaynak yoklama aralığı (kamu API limitlerine saygılı)
     barIntervalMs: 3 * 60 * 1000, // 3m bar agregasyonu (watchlist temposu)
     requestTimeoutMs: 8000,
+    // Push (WebSocket) modu: WS birincil olur, REST yoklama yalnız doğrulama
+    // kaynağını tazeler — aralık gevşetilir (kuorum için 10sn yeterli)
+    pollIntervalPushModeMs: 10_000,
+    ws: {
+      url: 'wss://ws.kraken.com/v2',
+      reconnectBaseMs: 1000,
+      reconnectMaxMs: 60_000,
+    },
   },
 
   analysis: {

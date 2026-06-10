@@ -105,12 +105,14 @@ test('kaynaklar arası sapma > 3×spread → karantina', async () => {
   assert.ok(events.some((e) => e.payload.reason.includes('sapma')));
 });
 
-test('monoton olmayan timestamp karantinaya alınır', async () => {
+test('geriye giden timestamp karantinaya alınır; eşit timestamp meşru (WS yığını)', async () => {
   const { clock, sanitizer } = setup();
   clock.t += 100;
   await sanitizer.ingestTick({ source: 'p', symbol: 'X', price: 100, timestamp: 1000 });
-  const result = await sanitizer.ingestTick({ source: 'p', symbol: 'X', price: 100, timestamp: 999 });
-  assert.equal(result.verdict, TICK_VERDICT.QUARANTINED);
+  const equal = await sanitizer.ingestTick({ source: 'p', symbol: 'X', price: 100.01, timestamp: 1000 });
+  assert.equal(equal.verdict, TICK_VERDICT.CLEAN, 'aynı ms\'de ikinci işlem reddedilmez');
+  const backwards = await sanitizer.ingestTick({ source: 'p', symbol: 'X', price: 100, timestamp: 999 });
+  assert.equal(backwards.verdict, TICK_VERDICT.QUARANTINED);
 });
 
 test('bayatlık bekçisi: sessiz feed FEED_STALE üretir (tek sefer)', async () => {

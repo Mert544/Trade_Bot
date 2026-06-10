@@ -94,10 +94,13 @@ export class Sanitizer {
       await this.#quarantine(source, symbol, 'geçersiz fiyat', { price, timestamp });
       return { verdict: TICK_VERDICT.QUARANTINED, errors: ['geçersiz fiyat'] };
     }
+    // Tick düzeyinde EŞİT zaman damgası meşrudur: borsa aynı milisaniyede
+    // birden çok işlem eşleştirebilir (WS trade yığınları). Yalnız geriye
+    // gidiş reddedilir; bar düzeyinde katı monotonluk validateBarStructure'da.
     const lastTs = this.#lastTimestamps.get(key);
-    if (lastTs !== undefined && timestamp <= lastTs) {
-      await this.#quarantine(source, symbol, 'timestamp monoton değil', { price, timestamp });
-      return { verdict: TICK_VERDICT.QUARANTINED, errors: ['timestamp monoton değil'] };
+    if (lastTs !== undefined && timestamp < lastTs) {
+      await this.#quarantine(source, symbol, 'timestamp geriye gitti', { price, timestamp });
+      return { verdict: TICK_VERDICT.QUARANTINED, errors: ['timestamp geriye gitti'] };
     }
     this.#lastTimestamps.set(key, timestamp);
 

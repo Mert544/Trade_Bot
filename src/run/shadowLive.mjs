@@ -18,6 +18,7 @@ import { CoinbaseProvider } from '../data/providers/coinbaseProvider.mjs';
 import { KrakenHistory } from '../data/providers/krakenHistory.mjs';
 import { ForexFactoryCalendar } from '../data/providers/forexFactoryCalendar.mjs';
 import { FeedManager } from '../data/feedManager.mjs';
+import { KrakenWsProvider } from '../data/providers/krakenWsProvider.mjs';
 import { MTFEngine } from '../analysis/mtfEngine.mjs';
 import { trueDayOpen } from '../time/nyClock.mjs';
 import { Journal } from '../persistence/journal.mjs';
@@ -70,11 +71,15 @@ export async function runShadowLive({
 
   const mtfEngine = new MTFEngine({ structurer: eco.structurer, logger });
 
+  // Faz D: WS varsa push modu (gerçek fitiller), yoksa klasik REST polling.
+  // ICT_WS=off ile polling'e zorlanabilir (sorun ayıklama).
+  const wsEnabled = process.env.ICT_WS !== 'off' && typeof globalThis.WebSocket === 'function';
   const feed = new FeedManager({
     primary: new KrakenProvider(),
     verification: new CoinbaseProvider(),
     sanitizer: eco.sanitizer,
     symbols: CONFIG.symbols.watchlist,
+    mode: wsEnabled ? 'push' : 'poll',
     logger,
 
     onQuote: (q) => {
@@ -115,6 +120,21 @@ export async function runShadowLive({
   }
 
   feed.start();
+
+  let krakenWs = null;
+  if (wsEnabled) {
+    krakenWs = new KrakenWsProvider({
+      symbols: CONFIG.symbols.watchlist,
+      logger,
+      onTick: (tick) => {
+        feed.ingestPush(tick).catch((err) => logger.error(`[feed] push hatası: ${err.message}`));
+      },
+    });
+    krakenWs.start();
+    logger.info('[feed] PUSH modu: Kraken WS birincil, Coinbase REST doğrulama');
+  } else {
+    logger.info('[feed] POLL modu: Kraken REST birincil');
+  }
 
   // Dashboard: anlık görüntü sağlayıcı tüm katmanları tek JSON'da toplar
   const snapshotProvider = () => {
@@ -187,6 +207,7 @@ export async function runShadowLive({
   const shutdown = () => {
     logger.info('[ict-bot] kapanış: feed, dashboard ve ajanlar durduruluyor');
     feed.stop();
+    krakenWs?.stop();
     dashboard.stop();
     eco.stop();
     clearInterval(dayWatch);
@@ -197,7 +218,7 @@ export async function runShadowLive({
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  return { eco, feed, mtfEngine, dashboard, journal, stats, telegram, shutdown };
+  return { eco, feed, mtfEngine, dashboard, journal, stats, telegram, krakenWs, shutdown };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
