@@ -20,18 +20,53 @@ import { ForexFactoryCalendar } from '../data/providers/forexFactoryCalendar.mjs
 import { FeedManager } from '../data/feedManager.mjs';
 import { MTFEngine } from '../analysis/mtfEngine.mjs';
 import { trueDayOpen } from '../time/nyClock.mjs';
+import { Journal } from '../persistence/journal.mjs';
+import { SetupStats } from '../signals/setupStats.mjs';
+import { TelegramNotifier } from '../signals/telegramNotifier.mjs';
+import { DashboardServer } from '../dashboard/server.mjs';
+import { randomUUID } from 'node:crypto';
 
 const STATUS_INTERVAL_MS = 60_000;
 
 export async function runShadowLive({
   logger = console,
   statusIntervalMs = STATUS_INTERVAL_MS,
+  dashboardPort = undefined,
 } = {}) {
+  // Kalıcılık + istatistik önce kurulur; journal replay ile restart'a dayanıklı
+  const journal = new Journal({ logger });
+  const stats = new SetupStats();
+  journal.replay((record) => stats.ingestJournalRecord(record));
+
+  // Killzone-dışı gözlem adayları (E6): bus'a çıkmaz, ama journal + istatistik +
+  // hipotetik akıbet izlemesine girer — killzone etkisinin doğal A/B verisi.
+  let ecoRef = null;
+  const onObservation = (obs) => {
+    const observation = { ...obs, correlationId: randomUUID() };
+    journal.append({ kind: 'observation', observation });
+    stats.recordObservation(observation);
+    ecoRef?.shadowLedger.recordRejection(
+      { msgId: observation.correlationId, correlationId: observation.correlationId, payload: obs },
+      'gözlem: killzone dışı',
+    );
+  };
+
   const eco = createEcosystem({
     mode: 'shadow',
     calendarProvider: new ForexFactoryCalendar(),
     logger,
+    onObservation,
   });
+  ecoRef = eco;
+
+  // Sinyal sink zinciri: journal (kalıcı) + istatistik + Telegram (varsa)
+  eco.signalHub.addSink(journal);
+  eco.signalHub.addSink(stats);
+  const telegram = new TelegramNotifier({ logger });
+  if (telegram.enabled) {
+    eco.signalHub.addSink(telegram);
+    logger.info('[telegram] bildirimler aktif');
+  }
 
   const mtfEngine = new MTFEngine({ structurer: eco.structurer, logger });
 
@@ -81,6 +116,35 @@ export async function runShadowLive({
 
   feed.start();
 
+  // Dashboard: anlık görüntü sağlayıcı tüm katmanları tek JSON'da toplar
+  const snapshotProvider = () => {
+    const snap = eco.stateManager.snapshot();
+    return {
+      time: Date.now(),
+      mode: eco.mode,
+      state: { killzone: snap.killzone, embargo: snap.embargo, riskLock: snap.riskLock, equity: snap.equity },
+      symbols: CONFIG.symbols.watchlist.map((symbol) => {
+        const q = feed.lastQuote(symbol);
+        return {
+          symbol,
+          price: q?.price ?? null,
+          spread: q?.spread ?? null,
+          regime: snap.regime?.[symbol]?.regime ?? null,
+          mtf: mtfEngine.snapshot(symbol),
+        };
+      }),
+      feed: feed.getTelemetry(),
+      bus: eco.bus.getTelemetry(),
+      shadow: eco.shadowLedger.stats(),
+      vetoAccuracy: eco.shadowLedger.vetoAccuracy(),
+      signals: eco.signalHub.list(40),
+      setupStats: stats.breakdown(),
+    };
+  };
+  const dashboard = new DashboardServer({ snapshotProvider, logger });
+  eco.signalHub.addSink(dashboard);
+  await dashboard.start(dashboardPort);
+
   // NY gün dönüşü bekçisi: drawdown sayaçları + takvim yenileme
   let currentDayOpen = trueDayOpen(new Date());
   const dayWatch = setInterval(async () => {
@@ -121,8 +185,9 @@ export async function runShadowLive({
   status.unref();
 
   const shutdown = () => {
-    logger.info('[ict-bot] kapanış: feed ve ajanlar durduruluyor');
+    logger.info('[ict-bot] kapanış: feed, dashboard ve ajanlar durduruluyor');
     feed.stop();
+    dashboard.stop();
     eco.stop();
     clearInterval(dayWatch);
     clearInterval(calendarRefresh);
@@ -132,7 +197,7 @@ export async function runShadowLive({
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  return { eco, feed, mtfEngine, shutdown };
+  return { eco, feed, mtfEngine, dashboard, journal, stats, telegram, shutdown };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

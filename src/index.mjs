@@ -32,6 +32,7 @@ export function createEcosystem({
   persistPath = null,
   logger = console,
   now = () => Date.now(),
+  onObservation = null, // killzone-dışı gözlem adayları (E6 karşılaştırma grubu)
 } = {}) {
   const rawBus = new EventBus();
   const bus = new ProtocolBus({ bus: rawBus, logger, now });
@@ -63,7 +64,7 @@ export function createEcosystem({
 
   const oracle = new Oracle({ bus, calendarProvider, now, logger });
   const governor = new Governor({ bus, stateManager, now, logger });
-  const structurer = new Structurer({ bus, now });
+  const structurer = new Structurer({ bus, now, onObservation });
   const sniper = new Sniper({ bus, broker: executionBroker, now, logger });
   const sanitizer = new Sanitizer({ bus, now });
   const regimeDetector = new RegimeDetector({ bus, now });
