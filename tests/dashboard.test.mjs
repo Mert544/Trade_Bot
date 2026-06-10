@@ -46,6 +46,27 @@ test('dashboard: / HTML döner, /api/snapshot JSON döner, 404 çalışır', asy
   server.stop();
 });
 
+test('dashboard: /api/bars mum verisi döner (sembol + tf parametreli)', async () => {
+  const server = new DashboardServer({
+    snapshotProvider: () => ({}),
+    barsProvider: (symbol, tf) => (symbol === 'BTCUSD' && tf === '15M'
+      ? Array.from({ length: 150 }, (_, i) => ({ openTime: i, open: 100, high: 101, low: 99, close: 100.5 }))
+      : []),
+    logger: silentLogger,
+    config: { port: 0, snapshotIntervalMs: 60_000, keepAliveMs: 60_000, maxEventLog: 100 },
+  });
+  const port = await server.start(0);
+
+  const res = await httpGet(port, '/api/bars?symbol=BTCUSD&tf=15M');
+  const data = JSON.parse(res.body);
+  assert.equal(data.symbol, 'BTCUSD');
+  assert.equal(data.bars.length, 120, 'son 120 barla sınırlanır');
+
+  const empty = JSON.parse((await httpGet(port, '/api/bars?symbol=YOK&tf=3m')).body);
+  assert.deepEqual(empty.bars, []);
+  server.stop();
+});
+
 test('dashboard: SSE istemcisi sinyal olayını alır', async () => {
   const server = new DashboardServer({
     snapshotProvider: () => ({ time: 1 }),

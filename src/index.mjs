@@ -87,6 +87,15 @@ export function createEcosystem({
       stateManager.recordPnl(trade.netPnl, { source: 'shadowLedger', correlationId: trade.correlationId });
       governor.recordTradeOutcome(trade.netPnl);
       signalHub.recordOutcome(trade);
+      // Sanal işlem kapandı: broker tarafındaki pozisyon kaydı da bırakılır
+      // (bırakılmazsa uzun koşuda birikir ve açık pozisyon listesi yalan söyler)
+      const brokerOrderId = brokerOrderByCandidate.get(trade.candidateId);
+      if (brokerOrderId) {
+        executionBroker.releasePosition?.(brokerOrderId);
+        brokerOrderByCandidate.delete(trade.candidateId);
+      }
+      candidateCache.delete(trade.candidateId);
+      approvalCache.delete(trade.candidateId);
       await governor.assessRiskState();
 
       // Bölüm 8.2 — otomatik otopsi: kök neden ataması + TRADE_POSTMORTEM.
@@ -136,9 +145,20 @@ export function createEcosystem({
   });
   // Gölge defter: reddedilen adayların akıbeti = veto isabet ölçümü
   const candidateCache = new Map();
-  const approvalCache = new Map(); // candidateId -> lotSize
-  bus.subscribe('SETUP_CANDIDATE', (env) => candidateCache.set(env.msgId, env));
-  bus.subscribe('RISK_APPROVAL', (env) => approvalCache.set(env.payload.candidateId, env.payload.lotSize));
+  const approvalCache = new Map();          // candidateId -> lotSize
+  const brokerOrderByCandidate = new Map(); // candidateId -> brokerOrderId
+  // Sınırsız büyüme freni: uzun koşuda eski adaylar bellekte birikmesin
+  const capMap = (map, max = 500) => {
+    while (map.size > max) map.delete(map.keys().next().value);
+  };
+  bus.subscribe('SETUP_CANDIDATE', (env) => {
+    candidateCache.set(env.msgId, env);
+    capMap(candidateCache);
+  });
+  bus.subscribe('RISK_APPROVAL', (env) => {
+    approvalCache.set(env.payload.candidateId, env.payload.lotSize);
+    capMap(approvalCache);
+  });
   bus.subscribe('RISK_VETO', (env) => {
     const candidateEnv = candidateCache.get(env.payload.candidateId);
     if (candidateEnv) shadowLedger.recordRejection(candidateEnv, env.payload.vetoReason);
@@ -148,6 +168,8 @@ export function createEcosystem({
     const candidateEnv = candidateCache.get(env.payload.candidateId);
     const lotSize = approvalCache.get(env.payload.candidateId) ?? 1;
     if (candidateEnv) {
+      brokerOrderByCandidate.set(env.payload.candidateId, env.payload.brokerOrderId);
+      capMap(brokerOrderByCandidate);
       // Gerçek fill bilgisi deftere taşınır: broker maliyeti zaten uyguladı
       shadowLedger.openVirtual(candidateEnv, {
         lotSize,

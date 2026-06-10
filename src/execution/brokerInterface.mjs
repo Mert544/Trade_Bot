@@ -149,6 +149,11 @@ export class PaperBroker extends BrokerInterface {
     return symbol ? all.filter((o) => o.symbol === symbol) : all;
   }
 
+  /** Sanal defter pozisyonu kapattığında broker kaydı bırakılır (PnL'siz). */
+  releasePosition(brokerOrderId) {
+    return this.#positions.delete(brokerOrderId);
+  }
+
   async closePosition(brokerOrderId) {
     const pos = this.#positions.get(brokerOrderId);
     if (!pos) throw new Error(`pozisyon yok: ${brokerOrderId}`);

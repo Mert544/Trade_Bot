@@ -249,7 +249,11 @@ export async function runShadowLive({
       equityCurve: equityCurve.slice(-300),
     };
   };
-  const dashboard = new DashboardServer({ snapshotProvider, logger });
+  const dashboard = new DashboardServer({
+    snapshotProvider,
+    barsProvider: (symbol, tf) => mtfEngine.series(symbol, tf),
+    logger,
+  });
   eco.signalHub.addSink(dashboard);
   await dashboard.start(dashboardPort);
 

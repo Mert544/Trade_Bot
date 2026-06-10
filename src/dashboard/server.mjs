@@ -11,6 +11,7 @@
  */
 
 import { createServer } from 'node:http';
+import { networkInterfaces } from 'node:os';
 import { CONFIG } from '../config/defaults.mjs';
 import { DASHBOARD_HTML } from './ui.mjs';
 
@@ -18,21 +19,28 @@ export class DashboardServer {
   #server = null;
   #clients = new Set(); // SSE yanıt nesneleri
   #snapshotProvider;
+  #barsProvider;
   #config;
   #logger;
   #timers = [];
 
-  constructor({ snapshotProvider, config = CONFIG.dashboard, logger = console } = {}) {
+  constructor({ snapshotProvider, barsProvider = null, config = CONFIG.dashboard, logger = console } = {}) {
     this.#snapshotProvider = snapshotProvider;
+    this.#barsProvider = barsProvider; // (symbol, tf) => bar[]
     this.#config = config;
     this.#logger = logger;
   }
 
-  async start(port = Number(process.env.ICT_DASHBOARD_PORT ?? this.#config.port)) {
+  async start(
+    port = Number(process.env.ICT_DASHBOARD_PORT ?? this.#config.port),
+    // Hotspot/LAN erişimi: tüm arayüzler dinlenir; telefon aynı ağdaysa
+    // http://<makine-ip>:port ile açar. Dashboard salt-okunurdur (emir yok).
+    host = process.env.ICT_DASHBOARD_HOST ?? '0.0.0.0',
+  ) {
     this.#server = createServer((req, res) => this.#handle(req, res));
     await new Promise((resolve, reject) => {
       this.#server.once('error', reject);
-      this.#server.listen(port, () => resolve());
+      this.#server.listen(port, host, () => resolve());
     });
 
     const status = setInterval(async () => {
@@ -52,7 +60,11 @@ export class DashboardServer {
     this.#timers = [status, keepAlive];
     // listen(0) rastgele port atar; istemciye GERÇEK port dönmeli
     const actualPort = this.#server.address().port;
-    this.#logger.info(`[dashboard] http://localhost:${actualPort} hazır`);
+    const lanIps = Object.values(networkInterfaces()).flat()
+      .filter((i) => i && i.family === 'IPv4' && !i.internal)
+      .map((i) => i.address);
+    this.#logger.info(`[dashboard] http://localhost:${actualPort} hazır`
+      + (lanIps.length ? ` | aynı ağdan (hotspot): ${lanIps.map((ip) => `http://${ip}:${actualPort}`).join(' ')}` : ''));
     return actualPort;
   }
 
@@ -78,6 +90,13 @@ export class DashboardServer {
         const snapshot = await this.#snapshotProvider();
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(snapshot));
+      } else if (url.pathname === '/api/bars') {
+        // Mum grafiği verisi: ?symbol=BTCUSD&tf=3m|15M|4H (son 120 bar)
+        const symbol = url.searchParams.get('symbol');
+        const tf = url.searchParams.get('tf') ?? '15M';
+        const bars = this.#barsProvider ? (this.#barsProvider(symbol, tf) ?? []) : [];
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ symbol, tf, bars: bars.slice(-120) }));
       } else if (url.pathname === '/events') {
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',

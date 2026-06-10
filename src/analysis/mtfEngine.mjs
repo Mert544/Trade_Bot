@@ -348,6 +348,15 @@ export class MTFEngine {
   correlationMatrix() {
     return this.#matrix?.matrix([...this.#state.keys()]) ?? [];
   }
+
+  /** Bar serisi erişimi (dashboard mum grafiği — yalnız kapanmış barlar). */
+  series(symbol, tf) {
+    const st = this.#sym(symbol);
+    if (tf === '3m') return [...st.bars3m];
+    if (tf === '15M') return [...st.s15.bars];
+    if (tf === '4H') return [...st.s4h.bars];
+    return [];
+  }
 }
 
 export default MTFEngine;

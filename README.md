@@ -105,6 +105,9 @@ Terfi edilmemiş model sabit önsel (0.6) döner — öğrenme sessizce devreye 
 Bot **işlem açmaz** — sinyal üretir ve iletir:
 
 1. `npm run shadow` → dashboard `http://localhost:8717` (port: `ICT_DASHBOARD_PORT`).
+   Telefondan izlemek için (hotspot/aynı ağ): açılış logundaki `http://<makine-ip>:8717`
+   adresini kullan — sunucu tüm arayüzleri dinler (`ICT_DASHBOARD_HOST` ile kısıtlanabilir),
+   salt-okunurdur. Grafik paneli sembol + zaman dilimi (3m/15M/4H) sekmeli mum grafiği sunar.
 2. Telegram (opsiyonel): BotFather'dan bot oluştur, `TELEGRAM_BOT_TOKEN` ve
    `TELEGRAM_CHAT_ID` env değişkenlerini ver — onaylı sinyaller tam detayla
    (giriş/stop/hedef/RR/kanıt zinciri), vetolular tek satır özetle, yapı
