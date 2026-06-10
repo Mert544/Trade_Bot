@@ -25,7 +25,12 @@ import { Journal } from '../persistence/journal.mjs';
 import { SetupStats } from '../signals/setupStats.mjs';
 import { TelegramNotifier } from '../signals/telegramNotifier.mjs';
 import { DashboardServer } from '../dashboard/server.mjs';
+import { PO3Tracker } from '../analysis/po3.mjs';
+import { CorrelationMatrix, SMTDetector } from '../analysis/smt.mjs';
+import { SymbolProfile } from '../analysis/symbolProfile.mjs';
+import { AttentionModel } from '../metacognition/attentionWeights.mjs';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, existsSync } from 'node:fs';
 
 const STATUS_INTERVAL_MS = 60_000;
 
@@ -52,11 +57,30 @@ export async function runShadowLive({
     );
   };
 
+  // Dikkat ağırlığı modeli: terfi edilmiş ağırlık dosyası varsa yüklenir,
+  // yoksa sabit önsel (0.6) — davranış değişmez, öğrenme açıkça çalıştırılır
+  // (npm run learn) ve CV kapısından geçmeden devreye giremez.
+  let attentionModel = new AttentionModel(CONFIG.metacognition.attention);
+  if (existsSync(CONFIG.metacognition.attention.weightsPath)) {
+    try {
+      attentionModel = AttentionModel.fromJSON(
+        JSON.parse(readFileSync(CONFIG.metacognition.attention.weightsPath, 'utf8')),
+        CONFIG.metacognition.attention,
+      );
+      if (attentionModel.promoted) {
+        logger.info(`[attention] terfi edilmiş ağırlıklar yüklendi (CV ort. ${attentionModel.metrics?.cvMean?.toFixed(3)})`);
+      }
+    } catch (err) {
+      logger.warn(`[attention] ağırlık dosyası okunamadı, önsel kullanılıyor: ${err.message}`);
+    }
+  }
+
   const eco = createEcosystem({
     mode: 'shadow',
     calendarProvider: new ForexFactoryCalendar(),
     logger,
     onObservation,
+    confidenceFn: (quality) => attentionModel.score(quality),
   });
   ecoRef = eco;
 
@@ -69,7 +93,31 @@ export async function runShadowLive({
     logger.info('[telegram] bildirimler aktif');
   }
 
-  const mtfEngine = new MTFEngine({ structurer: eco.structurer, logger });
+  // Derinleştirme katmanları: PO3, korelasyon/SMT, parite karakter profili
+  const po3 = new PO3Tracker(CONFIG.analysis.po3);
+  const matrix = new CorrelationMatrix({ window: CONFIG.analysis.smt.correlationWindow });
+  const smt = new SMTDetector({
+    matrix,
+    minCorrelation: CONFIG.analysis.smt.minCorrelation,
+    windowMs: CONFIG.analysis.smt.divergenceWindowMs,
+  });
+  const profile = new SymbolProfile(CONFIG.analysis.profile);
+
+  const mtfEngine = new MTFEngine({
+    structurer: eco.structurer,
+    logger,
+    po3,
+    smt,
+    matrix,
+    profile,
+    contextProviders: {
+      regime: (symbol) => eco.stateManager.get(`regime.${symbol}`)?.regime ?? null,
+      killzone: () => {
+        const kz = eco.stateManager.get('killzone');
+        return kz?.active ? kz.zone : null;
+      },
+    },
+  });
 
   // Faz D: WS varsa push modu (gerçek fitiller), yoksa klasik REST polling.
   // ICT_WS=off ile polling'e zorlanabilir (sorun ayıklama).
@@ -86,6 +134,7 @@ export async function runShadowLive({
       eco.broker.setQuote(q.symbol, { bid: q.bid, ask: q.ask });
       eco.sniper.recordSpread(q.symbol, q.spread);
       eco.shadowLedger.onPrice(q.symbol, q.price);
+      profile.onSpread(q.symbol, (q.spread / q.price) * 100);
     },
 
     onBar: async (bar) => {
@@ -107,13 +156,21 @@ export async function runShadowLive({
   const history = new KrakenHistory();
   for (const symbol of CONFIG.symbols.watchlist) {
     try {
-      const [bars4h, bars15m] = await Promise.all([
+      const [bars4h, bars15m, bars5m] = await Promise.all([
         history.fetchBars(symbol, '4H', CONFIG.analysis.warmupBars4h),
         history.fetchBars(symbol, '15M', CONFIG.analysis.warmupBars15m),
+        history.fetchBars(symbol, '5M', 300), // PO3 + korelasyon tohumu (~25 saat)
       ]);
       await mtfEngine.warmup(symbol, { bars4h, bars15m });
+
+      // Korelasyon matrisi 15M kapanışlarla tanımlı → ısınma barlarıyla tohumla
+      for (const b of bars15m) matrix.onClose(symbol, b.close);
+      // PO3 bugünün gün-içi barlarıyla kurulur (birikim penceresi + Judas tespiti)
+      for (const b of bars5m) po3.onBar(symbol, b);
+
       const ctx = eco.structurer.contextOf(symbol);
-      logger.info(`[mtf] ${symbol} başlangıç bağlamı: bias=${ctx.htfBias} dol=${ctx.dolLevel ?? '—'} faz=${ctx.phase}`);
+      const po3Ctx = po3.context(symbol);
+      logger.info(`[mtf] ${symbol} başlangıç: bias=${ctx.htfBias} dol=${ctx.dolLevel ?? '—'} faz=${ctx.phase} po3=${po3Ctx.phase}${po3Ctx.expectedDelivery ? `→${po3Ctx.expectedDelivery}` : ''}`);
     } catch (err) {
       logger.warn(`[mtf] ${symbol} ısınma başarısız (soğuk başlangıç): ${err.message}`);
     }
@@ -159,6 +216,8 @@ export async function runShadowLive({
       vetoAccuracy: eco.shadowLedger.vetoAccuracy(),
       signals: eco.signalHub.list(40),
       setupStats: stats.breakdown(),
+      correlations: mtfEngine.correlationMatrix(),
+      attention: { promoted: attentionModel.promoted, metrics: attentionModel.metrics },
     };
   };
   const dashboard = new DashboardServer({ snapshotProvider, logger });

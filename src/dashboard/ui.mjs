@@ -115,9 +115,22 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       html += '<div class="sym"><div><div class="price">' + esc(row.symbol) + ' ' + (row.price != null ? row.price : '—') + '</div>'
         + '<div class="' + biasClass(st.htfBias) + '">' + esc(st.htfBias || '—') + (st.dolLevel != null ? ' → DOL ' + st.dolLevel : '') + '</div></div>'
         + '<div class="meta">faz: ' + esc(st.phase || '—') + (st.narrativeConfirmed ? ' ✓' : '')
+        + (mtf.po3 && mtf.po3.phase && mtf.po3.phase !== 'UNKNOWN'
+          ? '<br>PO3: ' + esc(mtf.po3.phase) + (mtf.po3.expectedDelivery ? ' → ' + esc(mtf.po3.expectedDelivery) : '') : '')
         + '<br>rejim: ' + esc(row.regime || '—') + '<br>spread: ' + (row.spread != null ? row.spread.toFixed(6) : '—')
         + '<br>bar: ' + (mtf.bars3m || 0) + '×3m ' + (mtf.bars15m || 0) + '×15M ' + (mtf.bars4h || 0) + '×4H</div></div>';
     });
+    // Korelasyon/lead-lag satırı (SMT bağlamı)
+    if (s.correlations && s.correlations.length) {
+      html += '<div class="meta" style="padding:6px 4px 0">korelasyon: ' + s.correlations.map(function (c) {
+        return esc(c.pair) + ' r=' + (c.r != null ? c.r : '—')
+          + (c.leader && c.leader.lag > 0 ? ' (öncü: ' + esc(c.leader.symbol) + ' +' + c.leader.lag + ')' : '');
+      }).join(' · ') + '</div>';
+    }
+    if (s.attention) {
+      html += '<div class="meta" style="padding:2px 4px 0">dikkat modeli: '
+        + (s.attention.promoted ? 'TERFİ EDİLMİŞ (CV ' + (s.attention.metrics && s.attention.metrics.cvMean ? s.attention.metrics.cvMean.toFixed(3) : '—') + ')' : 'önsel (0.6) — veri birikiyor') + '</div>';
+    }
     $('symbols').innerHTML = html || '<span class="muted">veri bekleniyor…</span>';
 
     var f = s.feed || {}; var v = f.verdicts || {}; var b = s.bus || {};

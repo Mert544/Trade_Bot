@@ -40,12 +40,16 @@ export class Structurer {
   #newsSweepTags = new Map(); // symbol -> son NEWS_SWEEP_TAG payload
   #unsubscribers = [];
   #onObservation;
+  #confidenceFn;
 
-  constructor({ bus, config = CONFIG, now = () => Date.now(), onObservation = null } = {}) {
+  constructor({ bus, config = CONFIG, now = () => Date.now(), onObservation = null, confidenceFn = null } = {}) {
     this.#bus = bus;
     this.#config = config;
     this.#now = now;
     this.#onObservation = onObservation;
+    // Öğrenen güven skoru (dikkat ağırlıkları): terfi edilmemiş model sabit
+    // önsel döndürdüğü için bağlanması davranışı DEĞİŞTİRMEZ (Kademeli Evrim)
+    this.#confidenceFn = confidenceFn;
   }
 
   start() {
@@ -140,8 +144,11 @@ export class Structurer {
       return { proposed: false, reason: 'killzone dışı — aday gözlem statüsünde', observed: true };
     }
 
-    // Güven skoru: kanıt bileşenlerinin ağırlıklı birleşimi (v1: basit taban + bonuslar)
-    let confidence = 0.6;
+    // Güven skoru: dikkat ağırlığı modeli (terfi edildiyse öğrenilmiş,
+    // edilmediyse sabit önsel 0.6) + Oracle haber etiketi bonusu
+    let confidence = this.#confidenceFn
+      ? Math.min(0.95, Math.max(0.05, this.#confidenceFn(quality)))
+      : 0.6;
     const evidenceChain = [
       `4H ${ctx.htfBias}, DOL: ${ctx.dolLevel}`,
       `15M faz: ${ctx.phase} (anlatı teyitli)`,

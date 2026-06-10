@@ -66,6 +66,11 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 | Tarihsel ısınma (Kraken OHLC, ücretsiz) | `src/data/providers/krakenHistory.mjs` | ✅ |
 | Swing/likidite haritası (fraktal + eşit seviyeler) | `src/analysis/swings.mjs` | ✅ |
 | Yapı analizi (bias/DOL, sweep, MSS, FVG, MMXM) | `src/analysis/structure.mjs` | ✅ |
+| PD dizileri (premium/discount, OTE, OB/Breaker) | `src/analysis/pdArrays.mjs` | ✅ |
+| PO3 günlük teslim döngüsü (Judas → distribution) | `src/analysis/po3.mjs` | ✅ |
+| SMT diverjansı + korelasyon/lead-lag matrisi | `src/analysis/smt.mjs` | ✅ |
+| Sembol karakter profili (eşik normalizasyonu) | `src/analysis/symbolProfile.mjs` | ✅ |
+| 7.3 Purged K-Fold + dikkat ağırlığı modeli (`npm run learn`) | `src/metacognition/purgedKFold.mjs`, `attentionWeights.mjs` | ✅ |
 | MTF motoru (4H→15M→3m otomatik Structurer beslemesi, faz histerezisi) | `src/analysis/mtfEngine.mjs` | ✅ |
 | Sinyal yaşam döngüsü + Telegram + JSONL kalıcılık | `src/signals/`, `src/persistence/journal.mjs` | ✅ |
 | Dashboard (SSE, tek dosya UI) | `src/dashboard/` | ✅ |
@@ -76,9 +81,24 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 ### Henüz uygulanmayan (sonraki adımlar)
 - cTrader/MetaApi canlı icra adaptörü (`BrokerInterface` soyutlaması hazır)
 - 8.1 HRL hiyerarşisi; 8.2 karşı-olgusal tekrar oynatma (taksonomi v1 veri biriktiriyor)
-- 7.3 Purged K-Fold doğrulayıcısı ve dikkat ağırlığı optimizasyonu (kalite vektörleri journalda birikiyor)
 - Champion-challenger terfi orkestrasyonu (stateManager versiyonlama + rollback hazır)
 - decisionCoordinator'ın canlı hatta "ikinci görüş" olarak bağlanması (oy veren ajan yokken bilinçli ertelendi)
+- Yeni setup aileleri: FVG_RETEST (continuation, TREND rejimi), NEWS_SWEEP_REVERSAL
+  (Oracle etiketi tetikli) — SWEEP_MSS_FVG örneklem doldurduktan sonra
+
+## Öğrenme Döngüsü (`npm run learn`)
+
+Sinyal kalite bileşenleri (sweep derinliği, PD/OTE/OB uyumu, PO3 hizası, SMT
+diverjansı, rejim...) her sinyalde journala yazılır. `npm run learn`:
+
+1. Journal'dan sonuçlanmış örnekleri toplar (gerçek + hipotetik akıbet),
+2. Örnek eşiğini denetler (<100 → eğitim bile yok),
+3. L2'li lojistik regresyonu **purged K-Fold** kapısından geçirir
+   (CV ortalaması taban oranı +%2 geçmeli — gürültüden öğrenme reddedilir),
+4. Geçerse ağırlıkları `state/attention-weights.json`'a yazar; bot bir
+   SONRAKİ açılışta yükler (çalışan sürece sıcak enjeksiyon yok).
+
+Terfi edilmemiş model sabit önsel (0.6) döner — öğrenme sessizce devreye giremez.
 
 ## Sinyal Botu Kullanımı
 

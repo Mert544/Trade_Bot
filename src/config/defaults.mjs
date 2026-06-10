@@ -88,6 +88,21 @@ export const CONFIG = Object.freeze({
     consolidationRangePct: 0.6, // 15M konsolidasyon eşiği (pencere genliği % fiyat)
     biasSwingCount: 6,          // Bias sınıflandırmasında bakılan son swing sayısı
     phaseHysteresis: 2,         // 15M faz değişimi için ardışık teyit sayısı (E7 — flapping önleme)
+    po3: {
+      accumulationWindowMs: 4 * 60 * 60 * 1000, // TDO sonrası aralık kurma penceresi (Asya)
+      manipulationMinPct: 0.05,  // Judas: aralık ucunu asgari aşma (% fiyat)
+      displacementPct: 0.15,     // ters yönde teslim teyidi (% yol)
+    },
+    smt: {
+      minCorrelation: 0.6,       // |r| altında SMT anlamsız
+      correlationWindow: 96,     // 96 × 15M = 24 saat
+      divergenceWindowMs: 60 * 60 * 1000, // eşin süpürmesi bu pencerede aranır
+      maxLeadLag: 3,             // lead-lag taramasında azami gecikme (bar)
+    },
+    profile: {
+      referenceBarRangePct: 0.15, // eşik normalizasyon referans volatilitesi
+      minSamples: 60,             // altında ölçekleme 1.0 (muhafazakâr)
+    },
     maxSeriesLength: 500,       // Zaman dilimi başına tutulan azami bar
     warmupBars4h: 240,          // Açılışta çekilen 4H tarihsel bar (Kraken ücretsiz)
     warmupBars15m: 400,         // Açılışta çekilen 15M tarihsel bar
@@ -105,6 +120,16 @@ export const CONFIG = Object.freeze({
     // Kademeli doğrulama eşikleri (araştırma: 30 taban / 100+ ilk doğrulama /
     // 200-300+ terfi standardı). Örnek sayısı eşiği geçmeden bir üst iddia yok.
     sampleTiers: { floor: 30, validation: 100, promotion: 300 },
+    attention: {
+      basePrior: 0.6,            // terfi edilmemiş modelin sabit güveni
+      lr: 0.1,
+      epochs: 300,
+      l2: 0.05,                  // L2 düzenlileştirme — overfit freni
+      kFolds: 5,
+      purgeGap: 5,               // purged K-Fold tamponu (kayıt)
+      minLift: 0.02,             // CV ortalaması taban oranı en az bu kadar geçmeli
+      weightsPath: 'state/attention-weights.json',
+    },
     monteCarloRuns: 5000,
     monteCarloP95DailyDDLimitPct: 5.0, // P95 günlük DD < %5 değilse terfi yok
     attentionLearningRate: 0.05,       // Küçük adım boyutu
