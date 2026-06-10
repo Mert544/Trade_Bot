@@ -7,11 +7,34 @@ Anayasayla çelişen kod, performansı ne olursa olsun elenir.
 ## Hızlı Başlangıç
 
 ```bash
-npm test          # tüm kabul testleri (Faz 0–4)
-npm run shadow    # gölge modda boot (varsayılan ve güvenli mod)
+npm test          # tüm kabul testleri (Faz 0–4, ağ erişimi gerektirmez)
+npm run shadow    # GERÇEK VERİYLE gölge mod: Kraken + Coinbase + ForexFactory
 ```
 
-Harici bağımlılık **yoktur** — Node ≥ 20 yeterlidir (`node:test`, `Intl` ile DST).
+Harici bağımlılık **yoktur** — Node ≥ 20 yeterlidir (`node:test`, `Intl` ile DST, yerleşik `fetch`).
+
+## Gerçek Veri Katmanı
+
+`npm run shadow` sistemi anahtarsız, gerçek zamanlı kaynaklarla başlatır:
+
+| Rol | Kaynak | Not |
+|---|---|---|
+| Birincil fiyat | Kraken kamu Ticker API | Tek istekte tüm watchlist; bid/ask/son işlem |
+| Doğrulama fiyatı | Coinbase Exchange API | Çapraz kaynak kuorumu (bad tick / gerçek sweep ayrımı) |
+| Ekonomik takvim | ForexFactory haftalık JSON | NFP/CPI/FOMC; etki sınıfları HIGH/MEDIUM eşlenir |
+| Opsiyonel | Twelve Data (`TWELVEDATA_API_KEY`) | bid/ask vermez; tek başına kullanılmamalı |
+
+Akış: `FeedManager` her 5 sn'de iki kaynağı paralel yoklar → `Sanitizer`
+(Hampel/MAD + çapraz kuorum + staleness) → temiz tick'ler PaperBroker
+kotasyonu, Sniper spread geçmişi ve gölge defteri besler → 3m bar kapanışları
+rejim dedektörüne gider. Takvim her gün NY gün dönüşünde ve 6 saatte bir
+yenilenir; kaynak düşerse Oracle fail-closed geniş ambargo yayınlar.
+
+Kalibrasyon notları (canlı akışta doğrulandı):
+- Borsalar arası doğal fiyat farkı spread'i aştığı için çapraz kaynak
+  toleransı `max(3×spread, fiyat×%0,15)` olarak uygulanır.
+- Durgun piyasada MAD=0 bölme patlaması yapar; medyana göre %0,1 altı
+  sapma gürültü sayılır (sahte sweep önlenir).
 
 ## Mimari Haritası (Doküman → Kod)
 
@@ -36,10 +59,14 @@ Harici bağımlılık **yoktur** — Node ≥ 20 yeterlidir (`node:test`, `Intl`
 | 7.3 Monte Carlo terfi kapısı | `src/metacognition/monteCarloGate.mjs` | ✅ Faz 5 (ilk kapı) |
 | Ek C Konfigürasyon (versiyonlu, dondurulmuş) | `src/config/defaults.mjs` | ✅ |
 | Bootstrap (tüm katmanların bağlanması) | `src/index.mjs` | ✅ |
+| 4.1 Çoklu kaynak adaptörleri (Kraken/Coinbase/TwelveData) | `src/data/providers/` | ✅ |
+| Gerçek ekonomik takvim (ForexFactory → Oracle) | `src/data/providers/forexFactoryCalendar.mjs` | ✅ |
+| Besleme orkestratörü + 3m bar agregasyonu | `src/data/feedManager.mjs`, `src/data/barAggregator.mjs` | ✅ |
+| Gerçek veri gölge çalıştırıcısı | `src/run/shadowLive.mjs` | ✅ |
 
 ### Henüz uygulanmayan (sonraki adımlar)
-- Gerçek veri sağlayıcı adaptörleri (Twelve Data + cTrader/MetaApi tick stream)
-- Gerçek ekonomik takvim sağlayıcısı (Oracle `calendarProvider` arayüzü hazır; fail-closed çalışıyor)
+- 4H/15M/1M analiz motoru: gerçek barlardan DOL/MMXM/MSS çıkarımı (Structurer durum makinesi hazır, analiz girdileri henüz manuel besleniyor)
+- cTrader/MetaApi canlı icra adaptörü (`BrokerInterface` soyutlaması hazır)
 - 8.1 HRL hiyerarşisi ve 8.2 nedensel post-mortem otomasyonu (gölge defter karşı-olgusal veriyi topluyor)
 - 7.3 Purged K-Fold doğrulayıcısı ve dikkat ağırlığı optimizasyonu
 - Champion-challenger terfi orkestrasyonu (stateManager versiyonlama + rollback hazır)
@@ -61,10 +88,12 @@ Harici bağımlılık **yoktur** — Node ≥ 20 yeterlidir (`node:test`, `Intl`
 
 ## Test Kapsamı
 
-`tests/` altında 45 kabul testi, Ek B'deki Definition of Done maddelerini birebir izler:
+`tests/` altında 59 kabul testi, Ek B'deki Definition of Done maddelerini birebir izler:
 
 - `protocolBus.test.mjs` — Faz 0 kabul testleri (5 madde + dayanıklılık)
 - `oracle.test.mjs` — Faz 1: killzone sıfır kaçırma/mükerrer, ambargo pencereleri, DST sentetik saat testleri, fail-closed
 - `governor.test.mjs` — Faz 2: ambargo→kilit zinciri, drawdown makinesi, asimetrik lot, broker mutabakatı
 - `sanitizer.test.mjs` — Faz 3: bad tick / gerçek sweep ayrımı, OHLC doğrulama, staleness
 - `pipeline.test.mjs` — Faz 3–4: uçtan uca gölge zinciri, veto isabet ölçümü, müzakere hiyerarşisi, Monte Carlo kapısı
+- `providers.test.mjs` — Kraken/Coinbase parite eşlemeleri, ForexFactory etki + NY günü filtresi (mock fetch)
+- `feedManager.test.mjs` — çoklu kaynak orkestrasyonu, karantina yalıtımı, bar agregasyonu, kaynak düşme senaryoları

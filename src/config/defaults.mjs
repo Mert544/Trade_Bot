@@ -59,7 +59,23 @@ export const CONFIG = Object.freeze({
     hampelWindow: 50,            // Hampel filtresi tick penceresi
     madZScoreThreshold: 6.0,     // Bad tick MAD z-skor eşiği
     crossSourceDeviationSpreadMult: 3, // Kaynaklar arası sapma > 3×spread → karantina
+    // Borsalar arası doğal fiyat farkı spread'i aşabilir; tolerans tabanı
+    // fiyatın yüzdesi olarak: tolerans = max(3×spread, fiyat × %0,15)
+    crossSourceMinTolerancePct: 0.15,
     staleFeedTimeoutMs: 15000,   // Beklenen tick frekansı altı → FEED_STALE
+  },
+
+  feed: {
+    pollIntervalMs: 5000,        // Kaynak yoklama aralığı (kamu API limitlerine saygılı)
+    barIntervalMs: 3 * 60 * 1000, // 3m bar agregasyonu (watchlist temposu)
+    requestTimeoutMs: 8000,
+  },
+
+  calendar: {
+    // ForexFactory halka açık haftalık takvim beslemesi
+    url: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+    countries: ['USD', 'All'],   // USD pariteleri için yüksek etkili olaylar
+    resyncIntervalMs: 6 * 60 * 60 * 1000, // günlük senkron + 6 saatte bir tazeleme
   },
 
   metacognition: {

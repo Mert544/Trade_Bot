@@ -52,6 +52,13 @@ test('madZScore: medyandan aşırı sapan değer yüksek skor alır', () => {
   assert.ok(madZScore(150, window) > 6);
 });
 
+test('madZScore: durgun piyasada (MAD=0) mikro hareket gürültü sayılır', () => {
+  const flat = [61747.1, 61747.1, 61747.1, 61747.1, 61747.1, 61747.1];
+  assert.equal(madZScore(61747.1, flat), 0);
+  assert.equal(madZScore(61750, flat), 0, '%0,005 hareket sweep değildir');
+  assert.equal(madZScore(61900, flat), Infinity, '%0,25 sıçrama aykırı kalır');
+});
+
 test('bad tick: tek kaynaktaki iğne imha edilir (BAD_TICK + karantina)', async () => {
   const { clock, events, sanitizer } = setup();
   await warmUp(sanitizer, clock);

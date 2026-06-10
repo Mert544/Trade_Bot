@@ -30,12 +30,21 @@ function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-/** Median Absolute Deviation tabanlı sağlam z-skoru. */
-export function madZScore(value, window) {
+/**
+ * Median Absolute Deviation tabanlı sağlam z-skoru.
+ *
+ * MAD=0 durumu (durgun piyasada pencere fiyatları özdeş) bölme patlaması
+ * yaratır; medyana göre %0,1 altındaki sapma gürültü sayılır — aksi halde
+ * her mikro hareket sahte "sweep" üretir (canlı akışta gözlendi).
+ */
+export function madZScore(value, window, { quietNoiseFloorPct = 0.1 } = {}) {
   if (window.length < 5) return 0;
   const med = median(window);
   const mad = median(window.map((v) => Math.abs(v - med)));
-  if (mad === 0) return value === med ? 0 : Infinity;
+  if (mad === 0) {
+    const relDeviation = Math.abs(value - med) / med;
+    return relDeviation < quietNoiseFloorPct / 100 ? 0 : Infinity;
+  }
   return Math.abs(value - med) / (1.4826 * mad);
 }
 
@@ -102,7 +111,7 @@ export class Sanitizer {
       // Filtre 3: çapraz kaynak kuorumu — iğne ikinci kaynakta da var mı?
       if (crossSourcePrice !== null) {
         const crossDeviation = Math.abs(price - crossSourcePrice);
-        const confirmedByCross = crossDeviation <= this.#config.crossSourceDeviationSpreadMult * spread;
+        const confirmedByCross = crossDeviation <= this.#crossTolerance(price, spread);
         if (confirmedByCross) {
           // GERÇEK SWEEP — veri temizliği değil, fırsat tespiti.
           // Gerçek hareket pencereye dahil edilir (medyan yeni seviyeyi öğrenir).
@@ -117,12 +126,13 @@ export class Sanitizer {
       return { verdict: TICK_VERDICT.BAD_TICK, zScore };
     }
 
-    // Çapraz kaynak fiyat sapması (Bölüm 4.1): sapma > 3×spread → karantina
+    // Çapraz kaynak fiyat sapması (Bölüm 4.1): sapma toleransı aşarsa karantina.
+    // Tolerans = max(3×spread, fiyat × yüzdesel taban) — borsalar arası doğal fark payı.
     if (crossSourcePrice !== null) {
       const deviation = Math.abs(price - crossSourcePrice);
-      if (deviation > this.#config.crossSourceDeviationSpreadMult * spread) {
+      if (deviation > this.#crossTolerance(price, spread)) {
         await this.#quarantine(source, symbol,
-          `kaynaklar arası sapma ${deviation.toFixed(6)} > ${this.#config.crossSourceDeviationSpreadMult}×spread`,
+          `kaynaklar arası sapma ${deviation.toFixed(6)} > tolerans ${this.#crossTolerance(price, spread).toFixed(6)}`,
           { price, crossSourcePrice, timestamp });
         return { verdict: TICK_VERDICT.QUARANTINED, errors: ['çapraz kaynak sapması'] };
       }
@@ -154,6 +164,13 @@ export class Sanitizer {
       }
     }
     return staleEvents;
+  }
+
+  #crossTolerance(price, spread) {
+    return Math.max(
+      this.#config.crossSourceDeviationSpreadMult * spread,
+      price * ((this.#config.crossSourceMinTolerancePct ?? 0) / 100),
+    );
   }
 
   #pushWindow(key, window, price) {
