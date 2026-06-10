@@ -63,9 +63,12 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 | Gerçek ekonomik takvim (ForexFactory → Oracle) | `src/data/providers/forexFactoryCalendar.mjs` | ✅ |
 | Besleme orkestratörü + 3m bar agregasyonu | `src/data/feedManager.mjs`, `src/data/barAggregator.mjs` | ✅ |
 | Gerçek veri gölge çalıştırıcısı | `src/run/shadowLive.mjs` | ✅ |
+| Tarihsel ısınma (Kraken OHLC, ücretsiz) | `src/data/providers/krakenHistory.mjs` | ✅ |
+| Swing/likidite haritası (fraktal + eşit seviyeler) | `src/analysis/swings.mjs` | ✅ |
+| Yapı analizi (bias/DOL, sweep, MSS, FVG, MMXM) | `src/analysis/structure.mjs` | ✅ |
+| MTF motoru (4H→15M→3m otomatik Structurer beslemesi) | `src/analysis/mtfEngine.mjs` | ✅ |
 
 ### Henüz uygulanmayan (sonraki adımlar)
-- 4H/15M/1M analiz motoru: gerçek barlardan DOL/MMXM/MSS çıkarımı (Structurer durum makinesi hazır, analiz girdileri henüz manuel besleniyor)
 - cTrader/MetaApi canlı icra adaptörü (`BrokerInterface` soyutlaması hazır)
 - 8.1 HRL hiyerarşisi ve 8.2 nedensel post-mortem otomasyonu (gölge defter karşı-olgusal veriyi topluyor)
 - 7.3 Purged K-Fold doğrulayıcısı ve dikkat ağırlığı optimizasyonu
@@ -88,7 +91,19 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 
 ## Test Kapsamı
 
-`tests/` altında 59 kabul testi, Ek B'deki Definition of Done maddelerini birebir izler:
+## Maliyet Notu
+
+Sistem bilinçli olarak **sıfır bütçeyle** çalışacak şekilde kuruludur:
+tüm veri kaynakları anahtarsız ve ücretsizdir (Kraken fiyat + OHLC geçmişi,
+Coinbase doğrulama, ForexFactory takvim), harici npm paketi yoktur ve gölge
+mod gerçek sermaye riski taşımaz. Canlı icra aşamasına gelindiğinde de demo
+hesap (cTrader/MetaApi demo, ücretsiz) ile devam edilebilir; ödeme gerektiren
+tek adım, isteğe bağlı prop firm challenge ücretidir — o karar da gölge defter
+Monte Carlo kapısından geçtikten sonra verilir.
+
+## Test Kapsamı
+
+`tests/` altında 74 kabul testi, Ek B'deki Definition of Done maddelerini birebir izler:
 
 - `protocolBus.test.mjs` — Faz 0 kabul testleri (5 madde + dayanıklılık)
 - `oracle.test.mjs` — Faz 1: killzone sıfır kaçırma/mükerrer, ambargo pencereleri, DST sentetik saat testleri, fail-closed
@@ -97,3 +112,5 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 - `pipeline.test.mjs` — Faz 3–4: uçtan uca gölge zinciri, veto isabet ölçümü, müzakere hiyerarşisi, Monte Carlo kapısı
 - `providers.test.mjs` — Kraken/Coinbase parite eşlemeleri, ForexFactory etki + NY günü filtresi (mock fetch)
 - `feedManager.test.mjs` — çoklu kaynak orkestrasyonu, karantina yalıtımı, bar agregasyonu, kaynak düşme senaryoları
+- `analysis.test.mjs` — swing/havuz tespiti, bias/DOL, sweep/MSS/FVG, MMXM fazları (sentetik barlar)
+- `mtfEngine.test.mjs` — uçtan uca sentetik ICT senaryosu: ısınma → sweep → MSS → FVG → SETUP_CANDIDATE

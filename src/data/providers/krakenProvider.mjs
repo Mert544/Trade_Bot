@@ -8,7 +8,7 @@
 
 import { MarketDataProvider, fetchJson } from './marketDataProvider.mjs';
 
-const PAIRS = {
+export const PAIRS = {
   BTCUSD: { query: 'XBTUSD', aliases: ['XXBTZUSD', 'XBTUSD', 'BTCUSD'] },
   XRPUSD: { query: 'XRPUSD', aliases: ['XXRPZUSD', 'XRPUSD'] },
   SOLUSD: { query: 'SOLUSD', aliases: ['SOLUSD'] },

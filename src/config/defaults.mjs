@@ -71,6 +71,19 @@ export const CONFIG = Object.freeze({
     requestTimeoutMs: 8000,
   },
 
+  analysis: {
+    swingK: 2,                  // Fraktal swing tespiti: her iki yanda k bar
+    eqTolerancePct: 0.08,       // Eşit yüksek/düşük kümeleme toleransı (% fiyat)
+    sweepLookbackBars: 12,      // Süpürme arama penceresi (bar)
+    displacementFactor: 1.6,    // Displacement: bar genliği > ortalama × faktör
+    fvgMinSizePct: 0.05,        // FVG asgari boşluk (% fiyat) — mikro boşluk elenir
+    consolidationRangePct: 0.6, // 15M konsolidasyon eşiği (pencere genliği % fiyat)
+    biasSwingCount: 6,          // Bias sınıflandırmasında bakılan son swing sayısı
+    maxSeriesLength: 500,       // Zaman dilimi başına tutulan azami bar
+    warmupBars4h: 240,          // Açılışta çekilen 4H tarihsel bar (Kraken ücretsiz)
+    warmupBars15m: 400,         // Açılışta çekilen 15M tarihsel bar
+  },
+
   calendar: {
     // ForexFactory halka açık haftalık takvim beslemesi
     url: 'https://nfs.faireconomy.media/ff_calendar_thisweek.json',

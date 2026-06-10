@@ -15,8 +15,10 @@ import { CONFIG } from '../config/defaults.mjs';
 import { createEcosystem } from '../index.mjs';
 import { KrakenProvider } from '../data/providers/krakenProvider.mjs';
 import { CoinbaseProvider } from '../data/providers/coinbaseProvider.mjs';
+import { KrakenHistory } from '../data/providers/krakenHistory.mjs';
 import { ForexFactoryCalendar } from '../data/providers/forexFactoryCalendar.mjs';
 import { FeedManager } from '../data/feedManager.mjs';
+import { MTFEngine } from '../analysis/mtfEngine.mjs';
 import { trueDayOpen } from '../time/nyClock.mjs';
 
 const STATUS_INTERVAL_MS = 60_000;
@@ -30,6 +32,8 @@ export async function runShadowLive({
     calendarProvider: new ForexFactoryCalendar(),
     logger,
   });
+
+  const mtfEngine = new MTFEngine({ structurer: eco.structurer, logger });
 
   const feed = new FeedManager({
     primary: new KrakenProvider(),
@@ -46,6 +50,7 @@ export async function runShadowLive({
 
     onBar: async (bar) => {
       await eco.regimeDetector.onClose(bar.symbol, bar.close);
+      await mtfEngine.onBar3m(bar);
       logger.info(`[bar] ${bar.symbol} 3m O=${bar.open} H=${bar.high} L=${bar.low} C=${bar.close} (${bar.ticks} tick)`);
     },
 
@@ -56,6 +61,24 @@ export async function runShadowLive({
   });
 
   await eco.start();
+
+  // Analiz ısınması: Kraken ücretsiz OHLC geçmişiyle 4H/15M bağlamı kur.
+  // Kaynak erişilemezse soğuk başlanır — bias canlı barlarla zamanla oluşur.
+  const history = new KrakenHistory();
+  for (const symbol of CONFIG.symbols.watchlist) {
+    try {
+      const [bars4h, bars15m] = await Promise.all([
+        history.fetchBars(symbol, '4H', CONFIG.analysis.warmupBars4h),
+        history.fetchBars(symbol, '15M', CONFIG.analysis.warmupBars15m),
+      ]);
+      await mtfEngine.warmup(symbol, { bars4h, bars15m });
+      const ctx = eco.structurer.contextOf(symbol);
+      logger.info(`[mtf] ${symbol} başlangıç bağlamı: bias=${ctx.htfBias} dol=${ctx.dolLevel ?? '—'} faz=${ctx.phase}`);
+    } catch (err) {
+      logger.warn(`[mtf] ${symbol} ısınma başarısız (soğuk başlangıç): ${err.message}`);
+    }
+  }
+
   feed.start();
 
   // NY gün dönüşü bekçisi: drawdown sayaçları + takvim yenileme
@@ -109,7 +132,7 @@ export async function runShadowLive({
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  return { eco, feed, shutdown };
+  return { eco, feed, mtfEngine, shutdown };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
