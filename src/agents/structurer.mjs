@@ -39,11 +39,13 @@ export class Structurer {
   #killzoneActive = false;
   #newsSweepTags = new Map(); // symbol -> son NEWS_SWEEP_TAG payload
   #unsubscribers = [];
+  #onObservation;
 
-  constructor({ bus, config = CONFIG, now = () => Date.now() } = {}) {
+  constructor({ bus, config = CONFIG, now = () => Date.now(), onObservation = null } = {}) {
     this.#bus = bus;
     this.#config = config;
     this.#now = now;
+    this.#onObservation = onObservation;
   }
 
   start() {
@@ -116,7 +118,7 @@ export class Structurer {
    * Üst katman hizası yoksa hiçbir şey üretmez (tek yönlü bilgi akışı).
    * Killzone dışındaysa aday "gözlem" statüsünde kalır, yayınlanmaz.
    */
-  async proposeSetup(symbol, { side, entry, stop, targets, setupFamily, mssConfirmed, evidence = [] }) {
+  async proposeSetup(symbol, { side, entry, stop, targets, setupFamily, mssConfirmed, quality = {}, evidence = [] }) {
     const ctx = this.#ctx(symbol);
 
     if (!mssConfirmed) return { proposed: false, reason: 'MSS teyidi yok' };
@@ -128,6 +130,13 @@ export class Structurer {
       return { proposed: false, reason: `aday yönü (${side}) 4H bias (${ctx.htfBias}) ile çelişiyor` };
     }
     if (!this.#killzoneActive) {
+      // Killzone hipotez verisi (E6): gözlem adayı bus'a ÇIKMAZ (anayasal kural)
+      // ama karşılaştırma grubu olarak dış gözlemciye raporlanır — killzone'un
+      // kriptodaki etkisi varsayımla değil veriyle ölçülür.
+      this.#onObservation?.({
+        symbol, side, entry, stop, targets, setupFamily, quality,
+        evidence, observedAt: this.#now(), reason: 'killzone dışı',
+      });
       return { proposed: false, reason: 'killzone dışı — aday gözlem statüsünde', observed: true };
     }
 
@@ -146,7 +155,7 @@ export class Structurer {
     }
 
     const { envelope } = await this.#publish('SETUP_CANDIDATE', {
-      symbol, side, entry, stop, targets, setupFamily, confidence,
+      symbol, side, entry, stop, targets, setupFamily, confidence, quality,
       evidence: evidenceChain,
     }, {
       confidence,

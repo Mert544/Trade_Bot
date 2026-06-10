@@ -182,6 +182,17 @@ export class MTFEngine {
     const stop = mss.direction === 'BULLISH' ? sweep.extreme : sweep.extreme;
     const targets = ctx.dolLevel !== null ? [ctx.dolLevel] : [];
 
+    // Kalite bileşen vektörü (E3): bugün loglanır, yarın dikkat ağırlıkları
+    // bu bileşenlerden öğrenilir (§7.3). Bileşensiz sinyal = öğrenilemez sinyal.
+    const quality = {
+      sweepDepthPct: Number((Math.abs(sweep.level - sweep.extreme) / sweep.level * 100).toFixed(4)),
+      poolStrength: sweep.poolStrength,
+      fvgSizePct: Number(((fvg.high - fvg.low) / fvg.mid * 100).toFixed(4)),
+      mssToFvgBars: fvg.barIndex - mss.barIndex,
+      phase: ctx.phase,
+      htfBias: ctx.htfBias,
+    };
+
     const result = await this.#structurer.proposeSetup(symbol, {
       side,
       entry,
@@ -189,6 +200,7 @@ export class MTFEngine {
       targets,
       setupFamily: 'SWEEP_MSS_FVG',
       mssConfirmed: true,
+      quality,
       evidence: [
         `3m sweep: ${sweep.direction} @ ${sweep.level} (havuz gücü ${sweep.poolStrength})`,
         `MSS teyidi: ${mss.level} kapanışla kırıldı`,

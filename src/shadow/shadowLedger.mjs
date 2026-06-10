@@ -17,10 +17,19 @@ export class ShadowLedger {
   #rejected = new Map(); // candidateId -> { candidate, vetoReason, hypothetical }
   #costModel;
   #now;
+  #onClose;
+  #onHypothetical;
 
-  constructor({ costModel = { spread: 0.0002, commissionPerLot: 3.0, slippage: 0.0001 }, now = () => Date.now() } = {}) {
+  constructor({
+    costModel = { spread: 0.0002, commissionPerLot: 3.0, slippage: 0.0001 },
+    now = () => Date.now(),
+    onClose = null,        // (trade) => void — kapanan sanal işlem geri beslemesi
+    onHypothetical = null, // (record) => void — reddedilen adayın akıbeti çözüldü
+  } = {}) {
     this.#costModel = costModel;
     this.#now = now;
+    this.#onClose = onClose;
+    this.#onHypothetical = onHypothetical;
   }
 
   /** Onaylanan (veya challenger'ın alacağı) adayı sanal olarak açar. */
@@ -67,15 +76,17 @@ export class ShadowLedger {
       if (hitStop || hitTarget) {
         const exit = hitStop ? pos.stop : pos.targets[0];
         const grossPnl = (exit - pos.entry) * direction * pos.lotSize;
-        this.#trades.push({
+        const trade = {
           ...pos,
           exit,
           outcome: hitStop ? 'LOSS' : 'WIN',
           grossPnl,
           netPnl: grossPnl - pos.commission,
           closedAt: this.#now(),
-        });
+        };
+        this.#trades.push(trade);
         this.#open.delete(id);
+        this.#onClose?.(trade); // geri besleme: drawdown makinesi + sinyal sonucu + post-mortem
       }
     }
     // Reddedilen adayların hipotetik akıbeti (karşı-olgusal veri — Bölüm 8.2)
@@ -87,6 +98,7 @@ export class ShadowLedger {
         && (direction === 1 ? price >= rec.candidate.targets[0] : price <= rec.candidate.targets[0]);
       if (hitStop) rec.hypothetical = { status: 'RESOLVED', outcome: 'WOULD_HAVE_LOST' };
       else if (hitTarget) rec.hypothetical = { status: 'RESOLVED', outcome: 'WOULD_HAVE_WON' };
+      if (rec.hypothetical.status === 'RESOLVED') this.#onHypothetical?.(structuredClone(rec));
     }
   }
 

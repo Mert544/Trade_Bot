@@ -93,9 +93,36 @@ export const CONFIG = Object.freeze({
 
   metacognition: {
     minSamplesForWeightUpdate: 30,  // İşlem/kurulum; altında parametre değişmez
+    // Kademeli doğrulama eşikleri (araştırma: 30 taban / 100+ ilk doğrulama /
+    // 200-300+ terfi standardı). Örnek sayısı eşiği geçmeden bir üst iddia yok.
+    sampleTiers: { floor: 30, validation: 100, promotion: 300 },
     monteCarloRuns: 5000,
     monteCarloP95DailyDDLimitPct: 5.0, // P95 günlük DD < %5 değilse terfi yok
     attentionLearningRate: 0.05,       // Küçük adım boyutu
+  },
+
+  signals: {
+    // Bot işlem AÇMAZ; sinyal iletir. Telegram env yoksa sessiz devre dışı.
+    telegram: {
+      minIntervalMs: 1100,        // Telegram ~1 msg/sn limiti; kuyruk aralığı
+      maxQueue: 50,
+    },
+    expirySweepMs: 10_000,        // Yaşam döngüsü TTL süpürme aralığı
+    maxLiveSignals: 200,          // Bellekte tutulan son sinyal sayısı
+  },
+
+  dashboard: {
+    port: 8717,                   // ICT_DASHBOARD_PORT ile ezilebilir
+    snapshotIntervalMs: 5000,     // SSE durum özeti aralığı
+    keepAliveMs: 15_000,          // SSE yorum satırı keep-alive
+    maxEventLog: 100,
+  },
+
+  ws: {
+    url: 'wss://ws.kraken.com/v2',
+    reconnectBaseMs: 1000,        // Üstel geri çekilme tabanı
+    reconnectMaxMs: 60_000,       // Tavan + jitter
+    pollIntervalWithWsMs: 10_000, // WS aktifken REST doğrulama yoklaması
   },
 
   symbols: {

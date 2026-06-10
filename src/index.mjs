@@ -23,6 +23,7 @@ import { RegimeDetector } from './perception/regimeDetector.mjs';
 import { DecisionCoordinator } from './coordination/decisionCoordinator.mjs';
 import { ShadowLedger } from './shadow/shadowLedger.mjs';
 import { PaperBroker } from './execution/brokerInterface.mjs';
+import { SignalHub } from './signals/signalHub.mjs';
 
 export function createEcosystem({
   mode = process.env.ICT_MODE ?? 'shadow',
@@ -67,7 +68,23 @@ export function createEcosystem({
   const sanitizer = new Sanitizer({ bus, now });
   const regimeDetector = new RegimeDetector({ bus, now });
   const coordinator = new DecisionCoordinator({ bus, now });
-  const shadowLedger = new ShadowLedger({ now });
+  const signalHub = new SignalHub({ bus, stateManager, now, logger });
+
+  // Gölge defter geri besleme döngüsü: kapanan sanal işlem → PnL muhasebesi →
+  // drawdown makinesi → lot streak → sinyal sonucu. Bu döngü olmadan Governor
+  // hiç gerçekleşmiş sonuç görmez (yapısal boşluktu, burada kapanıyor).
+  const shadowLedger = new ShadowLedger({
+    now,
+    onClose: async (trade) => {
+      stateManager.recordPnl(trade.netPnl, { source: 'shadowLedger', correlationId: trade.correlationId });
+      governor.recordTradeOutcome(trade.netPnl);
+      signalHub.recordOutcome(trade);
+      await governor.assessRiskState();
+    },
+    onHypothetical: (rec) => {
+      signalHub.recordHypothetical(rec.correlationId, rec.hypothetical.outcome);
+    },
+  });
 
   // Omurga abonelikleri: stateManager olay akışından beslenir (tek gerçeklik kaynağı)
   bus.subscribe('KILLZONE_STATE', (env) => {
@@ -85,10 +102,18 @@ export function createEcosystem({
   });
   // Gölge defter: reddedilen adayların akıbeti = veto isabet ölçümü
   const candidateCache = new Map();
+  const approvalCache = new Map(); // candidateId -> lotSize
   bus.subscribe('SETUP_CANDIDATE', (env) => candidateCache.set(env.msgId, env));
+  bus.subscribe('RISK_APPROVAL', (env) => approvalCache.set(env.payload.candidateId, env.payload.lotSize));
   bus.subscribe('RISK_VETO', (env) => {
     const candidateEnv = candidateCache.get(env.payload.candidateId);
     if (candidateEnv) shadowLedger.recordRejection(candidateEnv, env.payload.vetoReason);
+  });
+  // Fill → sanal pozisyon: fiyat akışı stop/hedefi vurduğunda onClose döngüsü kapanır
+  bus.subscribe('ORDER_FILLED', (env) => {
+    const candidateEnv = candidateCache.get(env.payload.candidateId);
+    const lotSize = approvalCache.get(env.payload.candidateId) ?? 1;
+    if (candidateEnv) shadowLedger.openVirtual(candidateEnv, { lotSize });
   });
   bus.subscribe('HEARTBEAT', (env) => circuitBreaker.recordHeartbeat(env.payload.agentId));
 
@@ -113,6 +138,7 @@ export function createEcosystem({
     regimeDetector,
     coordinator,
     shadowLedger,
+    signalHub,
     broker: executionBroker,
 
     async start() {
@@ -120,6 +146,7 @@ export function createEcosystem({
       structurer.start();
       sniper.start();
       coordinator.start();
+      signalHub.start();
       await oracle.syncCalendar();
       oracle.start();
       logger.info(`[ict-bot] V5 ekosistemi ${mode.toUpperCase()} modunda başladı (semboller: ${CONFIG.symbols.watchlist.join(', ')})`);
@@ -131,6 +158,7 @@ export function createEcosystem({
       structurer.stop();
       sniper.stop();
       coordinator.stop();
+      signalHub.stop();
     },
   };
 }
