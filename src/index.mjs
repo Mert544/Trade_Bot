@@ -24,6 +24,7 @@ import { DecisionCoordinator } from './coordination/decisionCoordinator.mjs';
 import { ShadowLedger } from './shadow/shadowLedger.mjs';
 import { PaperBroker } from './execution/brokerInterface.mjs';
 import { SignalHub } from './signals/signalHub.mjs';
+import { classifyPostMortem } from './metacognition/postMortem.mjs';
 
 export function createEcosystem({
   mode = process.env.ICT_MODE ?? 'shadow',
@@ -81,6 +82,32 @@ export function createEcosystem({
       governor.recordTradeOutcome(trade.netPnl);
       signalHub.recordOutcome(trade);
       await governor.assessRiskState();
+
+      // Bölüm 8.2 — otomatik otopsi: kök neden ataması + TRADE_POSTMORTEM.
+      // weightDeltas v1'de daima boş (örnek eşiği dolmadan parametre değişmez).
+      const candidateEnv = candidateCache.get(trade.candidateId) ?? null;
+      const { rootCause, diagnosis } = classifyPostMortem({
+        trade,
+        candidate: candidateEnv,
+        biasNow: stateManager.get(`bias.${trade.symbol}`)?.htfBias ?? null,
+        ttlMs: CONFIG.execution.signalTtlMs,
+      });
+      await bus.publish({
+        type: 'TRADE_POSTMORTEM',
+        source: 'metacognition',
+        version: '1.0.0',
+        payload: {
+          correlationId: trade.correlationId,
+          outcome: trade.outcome,
+          rootCause,
+          counterfactuals: [],
+          weightDeltas: [],
+        },
+        evidence: [diagnosis],
+        correlationId: trade.correlationId,
+        ttlMs: 60_000,
+        timestamp: now(),
+      }).catch((err) => logger.error(`[postmortem] yayın hatası: ${err.message}`));
     },
     onHypothetical: (rec) => {
       signalHub.recordHypothetical(rec.correlationId, rec.hypothetical.outcome);
@@ -117,6 +144,13 @@ export function createEcosystem({
     if (candidateEnv) shadowLedger.openVirtual(candidateEnv, { lotSize });
   });
   bus.subscribe('HEARTBEAT', (env) => circuitBreaker.recordHeartbeat(env.payload.agentId));
+  // Ek A: TRADE_POSTMORTEM aboneliği — stateManager arşivi (kapasiteli)
+  bus.subscribe('TRADE_POSTMORTEM', (env) => {
+    const archive = stateManager.get('kpi.postmortems') ?? [];
+    archive.push({ at: env.timestamp, ...env.payload, diagnosis: env.evidence[0] ?? null });
+    if (archive.length > 200) archive.shift();
+    stateManager.set('kpi.postmortems', archive, { source: 'metacognition', correlationId: env.correlationId });
+  });
 
   // Heartbeat kayıtları + fail-safe etiketleri (Bölüm 6.3)
   circuitBreaker.register('oracle', { failSafe: 'PERMANENT_EMBARGO' });

@@ -87,6 +87,7 @@ export const CONFIG = Object.freeze({
     fvgMinSizePct: 0.05,        // FVG asgari boşluk (% fiyat) — mikro boşluk elenir
     consolidationRangePct: 0.6, // 15M konsolidasyon eşiği (pencere genliği % fiyat)
     biasSwingCount: 6,          // Bias sınıflandırmasında bakılan son swing sayısı
+    phaseHysteresis: 2,         // 15M faz değişimi için ardışık teyit sayısı (E7 — flapping önleme)
     maxSeriesLength: 500,       // Zaman dilimi başına tutulan azami bar
     warmupBars4h: 240,          // Açılışta çekilen 4H tarihsel bar (Kraken ücretsiz)
     warmupBars15m: 400,         // Açılışta çekilen 15M tarihsel bar

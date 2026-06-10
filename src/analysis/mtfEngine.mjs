@@ -87,6 +87,10 @@ export class MTFEngine {
         s4h: new TimeframeSeries({ intervalMs: TF_MS['4H'], maxLength: this.#config.maxSeriesLength }),
         bars3m: [],
         lastMssBarTime: 0,
+        // E7 histerezis: faz değişimi ancak ardışık teyitle Structurer'a iner
+        phaseCandidate: null,
+        phaseCandidateCount: 0,
+        confirmedPhase: null,
       });
     }
     return this.#state.get(symbol);
@@ -136,7 +140,8 @@ export class MTFEngine {
   // --- 15M: MMXM anlatısı ---
 
   async #analyze15M(symbol) {
-    const { s15 } = this.#sym(symbol);
+    const st = this.#sym(symbol);
+    const { s15 } = st;
     if (s15.bars.length < this.#config.sweepLookbackBars) return;
     const ctx = this.#structurer.contextOf(symbol);
     const swings = detectSwings(s15.bars, this.#config.swingK);
@@ -146,6 +151,28 @@ export class MTFEngine {
       displacementFactor: this.#config.displacementFactor,
       consolidationRangePct: this.#config.consolidationRangePct,
     });
+
+    // E7 histerezis: sınıflandırıcı UNKNOWN↔MANIPULATION arasında salınabilir
+    // (flapping). Faz değişimi ancak N ardışık aynı sonuçla Structurer'a iner;
+    // anlatının gereksiz bozulup yeniden kurulması sinyal kalitesini düşürür.
+    const required = this.#config.phaseHysteresis ?? 2;
+    if (phase === st.confirmedPhase) {
+      st.phaseCandidate = null;
+      st.phaseCandidateCount = 0;
+      return; // değişiklik yok
+    }
+    if (phase === st.phaseCandidate) {
+      st.phaseCandidateCount += 1;
+    } else {
+      st.phaseCandidate = phase;
+      st.phaseCandidateCount = 1;
+    }
+    // İlk teyit (confirmedPhase=null, ısınma) beklemeden geçer
+    if (st.confirmedPhase !== null && st.phaseCandidateCount < required) return;
+
+    st.confirmedPhase = phase;
+    st.phaseCandidate = null;
+    st.phaseCandidateCount = 0;
     await this.#structurer.updateNarrativePhase(symbol, { phase, alignedWithBias });
   }
 

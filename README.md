@@ -66,13 +66,42 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 | Tarihsel ısınma (Kraken OHLC, ücretsiz) | `src/data/providers/krakenHistory.mjs` | ✅ |
 | Swing/likidite haritası (fraktal + eşit seviyeler) | `src/analysis/swings.mjs` | ✅ |
 | Yapı analizi (bias/DOL, sweep, MSS, FVG, MMXM) | `src/analysis/structure.mjs` | ✅ |
-| MTF motoru (4H→15M→3m otomatik Structurer beslemesi) | `src/analysis/mtfEngine.mjs` | ✅ |
+| MTF motoru (4H→15M→3m otomatik Structurer beslemesi, faz histerezisi) | `src/analysis/mtfEngine.mjs` | ✅ |
+| Sinyal yaşam döngüsü + Telegram + JSONL kalıcılık | `src/signals/`, `src/persistence/journal.mjs` | ✅ |
+| Dashboard (SSE, tek dosya UI) | `src/dashboard/` | ✅ |
+| Setup×rejim×killzone istatistikleri (kademeli eşikler) | `src/signals/setupStats.mjs` | ✅ |
+| Kraken WebSocket gerçek tick akışı (push modu) | `src/data/providers/krakenWsProvider.mjs` | ✅ |
+| 8.2 Post-mortem taksonomisi v1 (TRADE_POSTMORTEM) | `src/metacognition/postMortem.mjs` | ✅ |
 
 ### Henüz uygulanmayan (sonraki adımlar)
 - cTrader/MetaApi canlı icra adaptörü (`BrokerInterface` soyutlaması hazır)
-- 8.1 HRL hiyerarşisi ve 8.2 nedensel post-mortem otomasyonu (gölge defter karşı-olgusal veriyi topluyor)
-- 7.3 Purged K-Fold doğrulayıcısı ve dikkat ağırlığı optimizasyonu
+- 8.1 HRL hiyerarşisi; 8.2 karşı-olgusal tekrar oynatma (taksonomi v1 veri biriktiriyor)
+- 7.3 Purged K-Fold doğrulayıcısı ve dikkat ağırlığı optimizasyonu (kalite vektörleri journalda birikiyor)
 - Champion-challenger terfi orkestrasyonu (stateManager versiyonlama + rollback hazır)
+- decisionCoordinator'ın canlı hatta "ikinci görüş" olarak bağlanması (oy veren ajan yokken bilinçli ertelendi)
+
+## Sinyal Botu Kullanımı
+
+Bot **işlem açmaz** — sinyal üretir ve iletir:
+
+1. `npm run shadow` → dashboard `http://localhost:8717` (port: `ICT_DASHBOARD_PORT`).
+2. Telegram (opsiyonel): BotFather'dan bot oluştur, `TELEGRAM_BOT_TOKEN` ve
+   `TELEGRAM_CHAT_ID` env değişkenlerini ver — onaylı sinyaller tam detayla
+   (giriş/stop/hedef/RR/kanıt zinciri), vetolular tek satır özetle, yapı
+   bozulmaları "sinyal geri çekildi" mesajıyla düşer. Token yoksa sessiz atlanır.
+3. Sinyal geçmişi `state/journal-*.jsonl` dosyalarında kalıcıdır; restart
+   sonrası istatistikler otomatik geri yüklenir.
+
+### Overfit disiplini (görsel + yapısal)
+
+- Setup×rejim×killzone hücreleri kademeli örnek eşiğiyle etiketlenir:
+  <30 "veri yetersiz", <100 "ön gösterge", <300 "doğrulama", ≥300 "güvenilir".
+  Eşik altı hücre üzerinden parametre kararı alınmaz.
+- Killzone'lar kriptoda **hipotez** olarak ele alınır: killzone-dışı adaylar
+  gözlem grubuna düşer ve hipotetik akıbetleri izlenir (doğal A/B verisi).
+- Post-mortem v1 `weightDeltas` daima boş döner — örnek eşiği dolmadan
+  hiçbir ağırlık değişmez; 15M faz histerezisi (2 ardışık teyit) sınıflandırma
+  gürültüsünün anlatıyı bozmasını engeller.
 
 ## Anayasal Garantiler (kodda zorlanır)
 
@@ -89,8 +118,6 @@ Kalibrasyon notları (canlı akışta doğrulandı):
 - **Maliyetsiz simülasyon yasak:** Gölge defter spread + komisyon + slippage içerir.
 - **Terfi kapısı:** P95 günlük DD ≥ %5 olan konfigürasyon canlıya alınamaz; 30 işlem altında parametre değişmez.
 
-## Test Kapsamı
-
 ## Maliyet Notu
 
 Sistem bilinçli olarak **sıfır bütçeyle** çalışacak şekilde kuruludur:
@@ -103,7 +130,7 @@ Monte Carlo kapısından geçtikten sonra verilir.
 
 ## Test Kapsamı
 
-`tests/` altında 74 kabul testi, Ek B'deki Definition of Done maddelerini birebir izler:
+`tests/` altında 100 kabul testi, Ek B'deki Definition of Done maddelerini birebir izler:
 
 - `protocolBus.test.mjs` — Faz 0 kabul testleri (5 madde + dayanıklılık)
 - `oracle.test.mjs` — Faz 1: killzone sıfır kaçırma/mükerrer, ambargo pencereleri, DST sentetik saat testleri, fail-closed
@@ -114,3 +141,7 @@ Monte Carlo kapısından geçtikten sonra verilir.
 - `feedManager.test.mjs` — çoklu kaynak orkestrasyonu, karantina yalıtımı, bar agregasyonu, kaynak düşme senaryoları
 - `analysis.test.mjs` — swing/havuz tespiti, bias/DOL, sweep/MSS/FVG, MMXM fazları (sentetik barlar)
 - `mtfEngine.test.mjs` — uçtan uca sentetik ICT senaryosu: ısınma → sweep → MSS → FVG → SETUP_CANDIDATE
+- `signals.test.mjs` — sinyal yaşam döngüsü, Telegram biçimleme/429, journal append+replay
+- `dashboard.test.mjs` — HTML/snapshot/SSE uçları, setup istatistik kırılımı ve eşik etiketleri
+- `krakenWs.test.mjs` — WS abonelik/ayrıştırma/yeniden bağlanma (sahte WebSocket), push modu kuorum
+- `discipline.test.mjs` — post-mortem taksonomisi, faz histerezisi, look-ahead korumaları
