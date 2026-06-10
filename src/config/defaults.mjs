@@ -24,6 +24,20 @@ export const CONFIG = Object.freeze({
     failClosedWindow: { beforeMin: 30, afterMin: 15 },
   },
 
+  account: {
+    // Sanal hesap (gölge mod): bot işlem AÇMAZ; bu bakiye "sinyalleri X
+    // dolarla izleseydin" sorusunun dürüst muhasebesidir. ICT_EQUITY env
+    // ile değiştirilebilir; varsayılan öğrenci gerçeği ölçeği.
+    startingEquity: Number(process.env.ICT_EQUITY ?? 1000),
+    maxLeverage: 1,            // spot varsayımı: nominal pozisyon ≤ bakiye
+    feeTakerPct: 0.26,         // Kraken spot taker (% nominal)
+    feeMakerPct: 0.16,         // bekleyen limit dolumu = maker
+    slippagePct: 0.02,         // pazarlanabilir emirde fiyatın %'si
+    // Borsa asgari emir boyutları (Kraken spot, baz varlık cinsinden).
+    // Altında kalan lot "hesap için uygulanamaz" vetosu üretir.
+    minOrderSize: { BTCUSD: 0.0001, ETHUSD: 0.002, SOLUSD: 0.02, XRPUSD: 5 },
+  },
+
   risk: {
     maxTotalDrawdownPct: 10.0,   // FTMO sert limiti
     maxDailyDrawdownPct: 5.0,    // FTMO sert limiti

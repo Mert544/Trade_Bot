@@ -141,10 +141,16 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       + '<div class="kv"><span>Bus: yayın / ret / TTL düşen</span><b>' + (b.published||0) + ' / ' + (b.rejectedInvalid||0) + ' / ' + (b.droppedExpired||0) + '</b></div>'
       + (f.wsTicks != null ? '<div class="kv"><span>WS tick</span><b>' + f.wsTicks + '</b></div>' : '');
 
-    var sh = s.shadow || {}; var va = s.vetoAccuracy || {};
+    var sh = s.shadow || {}; var va = s.vetoAccuracy || {}; var ac = s.account || {};
+    var pnlClass = (ac.equity || 0) >= (ac.startingEquity || 0) ? 'long' : 'short';
     $('shadow').innerHTML =
-      '<div class="kv"><span>İşlem (K/Z)</span><b>' + (sh.total||0) + ' (' + (sh.wins||0) + '/' + (sh.losses||0) + ')</b></div>'
-      + '<div class="kv"><span>Kazanma oranı</span><b>' + (sh.winRate != null ? (sh.winRate*100).toFixed(1) + '%' : '—') + '</b></div>'
+      (ac.equity != null
+        ? '<div class="kv"><span>Bakiye (sanal)</span><b class="' + pnlClass + '">' + ac.equity.toFixed(2) + '$ <span class="muted">(başlangıç ' + ac.startingEquity + '$)</span></b></div>'
+        + '<div class="kv"><span>Gün PnL / Günlük DD / Toplam DD</span><b>' + (ac.dailyPnl||0).toFixed(2) + '$ / %' + (ac.dailyDDPct||0).toFixed(2) + ' / %' + (ac.totalDDPct||0).toFixed(2) + '</b></div>'
+        + equitySparkline(s.equityCurve || [])
+        : '')
+      + '<div class="kv"><span>İşlem (K/Z)</span><b>' + (sh.total||0) + ' (' + (sh.wins||0) + '/' + (sh.losses||0) + ')</b></div>'
+      + '<div class="kv"><span>Kazanma oranı / Toplam R / Ort R</span><b>' + (sh.winRate != null ? (sh.winRate*100).toFixed(1) + '%' : '—') + ' / ' + (sh.totalR != null ? sh.totalR : '—') + ' / ' + (sh.avgR != null ? sh.avgR : '—') + '</b></div>'
       + '<div class="kv"><span>Net PnL (sanal)</span><b>' + (sh.netPnl != null ? sh.netPnl.toFixed(2) : '0') + '</b></div>'
       + '<div class="kv"><span>Açık / veto kaydı</span><b>' + (sh.openCount||0) + ' / ' + (sh.rejectedCount||0) + '</b></div>'
       + '<div class="kv"><span>Veto isabeti</span><b>' + (va.accuracy != null ? (va.accuracy*100).toFixed(0) + '% (' + va.resolved + ' çözüldü)' : 'veri yok') + '</b></div>';
@@ -158,6 +164,23 @@ export const DASHBOARD_HTML = `<!DOCTYPE html>
       $('stats').innerHTML = '<table><tr><th>Aile</th><th>Rejim</th><th>Killzone</th><th>n</th><th>Kazanç</th><th>Güven katmanı</th></tr>' + rows + '</table>';
     }
     renderSignals(s.signals || []);
+  }
+
+  /** Equity eğrisi: bağımlılıksız mini SVG çizgi grafiği. */
+  function equitySparkline(points) {
+    if (!points || points.length < 2) return '<div class="muted" style="padding:4px 0">equity eğrisi: ilk işlem kapanışını bekliyor</div>';
+    var w = 280, h = 48;
+    var vals = points.map(function (p) { return p.equity; });
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var span = (max - min) || 1;
+    var path = points.map(function (p, i) {
+      var x = (i / (points.length - 1)) * w;
+      var y = h - ((p.equity - min) / span) * (h - 4) - 2;
+      return (i ? 'L' : 'M') + x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    var up = vals[vals.length - 1] >= vals[0];
+    return '<svg width="' + w + '" height="' + h + '" style="display:block;margin:6px 0">'
+      + '<path d="' + path + '" fill="none" stroke="' + (up ? '#4ade80' : '#f87171') + '" stroke-width="1.5"/></svg>';
   }
 
   var signalMap = {};

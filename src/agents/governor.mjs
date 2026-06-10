@@ -90,7 +90,7 @@ export class Governor {
    * Risk tutarı sabit kalır; lot, stop mesafesi ve rejime göre türetilir.
    * @returns {{ lotSize, riskPct, riskAmount }}
    */
-  computeLotSize({ entry, stop, equity = this.#state.get('equity'), regime = 'RANGE', pipValue = 1 }) {
+  computeLotSize({ entry, stop, equity = this.#state.get('equity'), regime = 'RANGE', pipValue = 1, symbol = null }) {
     const r = this.#config.risk;
     let riskPct = r.baseRiskPerTradePct;
 
@@ -114,8 +114,33 @@ export class Governor {
     const riskAmount = equity * (riskPct / 100);
     const stopDistance = Math.abs(entry - stop);
     if (stopDistance <= 0) return { lotSize: 0, riskPct: 0, riskAmount: 0 };
-    const lotSize = riskAmount / (stopDistance * pipValue);
-    return { lotSize: Math.max(0, Number(lotSize.toFixed(4))), riskPct, riskAmount };
+    let lotSize = riskAmount / (stopDistance * pipValue);
+
+    // Hesap kısıtları (bakiye gerçekçiliği):
+    // 1. Nominal tavan: spot hesapta pozisyon değeri bakiyeyi aşamaz
+    const account = this.#config.account ?? {};
+    if (account.maxLeverage && entry > 0) {
+      const notionalCap = (equity * account.maxLeverage) / entry;
+      lotSize = Math.min(lotSize, notionalCap);
+    }
+    // 2. Borsa asgari emir boyutu: altında kalan sinyal bu hesapla UYGULANAMAZ.
+    //    Sinyal yanlış değil, hesap küçük — gerekçe asgari bakiyeyi söyler.
+    const minOrder = symbol ? account.minOrderSize?.[symbol] ?? 0 : 0;
+    if (minOrder > 0 && lotSize < minOrder) {
+      const minRequiredEquity = riskPct > 0
+        ? Math.ceil((minOrder * stopDistance * pipValue) / (riskPct / 100))
+        : null;
+      return {
+        lotSize: 0,
+        riskPct,
+        riskAmount,
+        infeasible: 'MIN_ORDER',
+        minOrder,
+        minRequiredEquity,
+      };
+    }
+
+    return { lotSize: Math.max(0, Number(lotSize.toFixed(6))), riskPct, riskAmount };
   }
 
   recordTradeOutcome(pnl) {
@@ -154,9 +179,14 @@ export class Governor {
     }
 
     const regime = this.#state.get(`regime.${candidate.symbol}`)?.regime ?? 'RANGE';
-    const { lotSize, riskPct } = this.computeLotSize({
-      entry: candidate.entry, stop: candidate.stop, regime,
+    const sizing = this.computeLotSize({
+      entry: candidate.entry, stop: candidate.stop, regime, symbol: candidate.symbol,
     });
+    const { lotSize, riskPct } = sizing;
+    if (sizing.infeasible === 'MIN_ORDER') {
+      return veto(`Hesap için uygulanamaz: lot < borsa asgarisi ${sizing.minOrder}`
+        + (sizing.minRequiredEquity ? ` (bu sinyal ~${sizing.minRequiredEquity}$ altı hesapta uygulanamaz)` : ''));
+    }
     if (lotSize <= 0) {
       return veto('Lot fonksiyonu sıfır döndü (DD tamponu tükenmiş veya geçersiz stop)');
     }

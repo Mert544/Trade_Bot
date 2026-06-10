@@ -51,6 +51,17 @@ export class TelegramNotifier {
     return Boolean(this.#token && this.#chatId);
   }
 
+  /** Serbest metin (günlük rapor vb.) — aynı kuyruk/limit disiplinine tabi. */
+  sendText(text) {
+    if (!this.enabled || !text) return;
+    if (this.#queue.length >= this.#config.maxQueue) {
+      this.telemetry.dropped += 1;
+      return;
+    }
+    this.#queue.push(text);
+    this.#drain();
+  }
+
   /** SignalHub sink arayüzü. */
   onSignalEvent(eventType, signal) {
     if (!this.enabled) return;
@@ -87,7 +98,7 @@ export class TelegramNotifier {
         return `⚠️ <b>SİNYAL GERİ ÇEKİLDİ — ${s.symbol}</b>\nGerekçe: ${s.invalidationReason}\n(Giriş ${fiyat(s.entry)} artık geçersiz)`;
       case SIGNAL_EVENT.EXPIRED:
         return s.status === 'EXPIRED' && s.lotSize !== undefined
-          ? `⏱ <b>${s.symbol}</b> sinyali süre doldu (giriş ${fiyat(s.entry)} gerçekleşmedi)`
+          ? `⏱ <b>${s.symbol}</b> sinyali süre doldu — ${s.unfilledReason ?? `giriş ${fiyat(s.entry)} gerçekleşmedi`}`
           : null; // onaylanmamış adayın süresi sessiz dolar
       case SIGNAL_EVENT.CLOSED: {
         const emoji = s.outcome === 'WIN' ? '🎯' : '🛑';

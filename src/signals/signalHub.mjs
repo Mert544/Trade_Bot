@@ -199,9 +199,25 @@ export class SignalHub {
     signal.status = SIGNAL_STATUS.CLOSED;
     signal.outcome = trade.outcome;        // WIN | LOSS
     signal.netPnl = trade.netPnl;
+    signal.rMultiple = trade.rMultiple ?? null; // bakiyeden bağımsız dürüst ölçü
     signal.exit = trade.exit;
     signal.updatedAt = this.#now();
     this.#emit(SIGNAL_EVENT.CLOSED, signal);
+  }
+
+  /**
+   * Sniper TTL iptali: onaylı sinyal hiç DOLMADI (fiyat girişe dönmedi).
+   * "Fill yok" ayrı ve değerli bir sonuçtur — sinyallerin uygulanabilirlik
+   * oranını ölçer; EXPIRED durumuyla işaretlenir, unfilled bayrağı taşır.
+   */
+  markUnfilled({ correlationId, reason }) {
+    const signal = this.#signals.get(correlationId);
+    if (!signal || signal.status !== SIGNAL_STATUS.APPROVED) return;
+    signal.status = SIGNAL_STATUS.EXPIRED;
+    signal.unfilled = true;
+    signal.unfilledReason = reason;
+    signal.updatedAt = this.#now();
+    this.#emit(SIGNAL_EVENT.EXPIRED, signal);
   }
 
   /** Reddedilen/gözlem adayının hipotetik akıbeti (veto isabeti verisi). */

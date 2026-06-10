@@ -21,7 +21,9 @@ export class ShadowLedger {
   #onHypothetical;
 
   constructor({
-    costModel = { spread: 0.0002, commissionPerLot: 3.0, slippage: 0.0001 },
+    // Yüzdesel maliyet modeli (kripto gerçeği): giriş komisyonu fill'den
+    // gelir (maker/taker), çıkış stop/hedef = taker varsayımı.
+    costModel = { spread: 0.0002, slippage: 0.0001, feeTakerPct: 0.26 },
     now = () => Date.now(),
     onClose = null,        // (trade) => void — kapanan sanal işlem geri beslemesi
     onHypothetical = null, // (record) => void — reddedilen adayın akıbeti çözüldü
@@ -32,22 +34,29 @@ export class ShadowLedger {
     this.#onHypothetical = onHypothetical;
   }
 
-  /** Onaylanan (veya challenger'ın alacağı) adayı sanal olarak açar. */
-  openVirtual(candidateEnvelope, { lotSize, strategyVersion = 'champion' }) {
+  /**
+   * Onaylanan adayı sanal olarak açar. Gerçek fill bilgisi (fillPrice +
+   * commission) verilirse aynen kullanılır — broker zaten maliyet uyguladı,
+   * çifte sayım olmaz. Verilmezse (eski yol/testler) dahili model uygulanır.
+   */
+  openVirtual(candidateEnvelope, { lotSize, strategyVersion = 'champion', fillPrice = null, commission = null }) {
     const c = candidateEnvelope.payload;
     const direction = c.side === 'BUY' ? 1 : -1;
-    const entryWithCosts = c.entry + direction * (this.#costModel.slippage + this.#costModel.spread / 2);
+    const entry = fillPrice ?? (c.entry + direction * (this.#costModel.slippage + this.#costModel.spread / 2));
+    const entryCommission = commission ?? entry * lotSize * ((this.#costModel.feeTakerPct ?? 0) / 100);
+    const riskAmount = Math.abs(entry - c.stop) * lotSize; // 1R tanımı
     this.#open.set(candidateEnvelope.msgId, {
       candidateId: candidateEnvelope.msgId,
       correlationId: candidateEnvelope.correlationId,
       strategyVersion,
       symbol: c.symbol,
       side: c.side,
-      entry: entryWithCosts,
+      entry,
       stop: c.stop,
       targets: c.targets,
       lotSize,
-      commission: this.#costModel.commissionPerLot * lotSize,
+      commission: entryCommission,
+      riskAmount,
       openedAt: this.#now(),
     });
   }
@@ -76,12 +85,18 @@ export class ShadowLedger {
       if (hitStop || hitTarget) {
         const exit = hitStop ? pos.stop : pos.targets[0];
         const grossPnl = (exit - pos.entry) * direction * pos.lotSize;
+        const exitFee = exit * pos.lotSize * ((this.#costModel.feeTakerPct ?? 0) / 100);
+        const netPnl = grossPnl - pos.commission - exitFee;
         const trade = {
           ...pos,
           exit,
           outcome: hitStop ? 'LOSS' : 'WIN',
           grossPnl,
-          netPnl: grossPnl - pos.commission,
+          exitFee,
+          netPnl,
+          // R-multiple: bakiyeden bağımsız, bileşik etkiden arınmış ölçü —
+          // küçük örneklemde PnL'den daha dürüst (tek şanslı işlem eğriyi süsler)
+          rMultiple: pos.riskAmount > 0 ? Number((netPnl / pos.riskAmount).toFixed(3)) : null,
           closedAt: this.#now(),
         };
         this.#trades.push(trade);
@@ -116,12 +131,15 @@ export class ShadowLedger {
       : this.#trades;
     const wins = trades.filter((t) => t.outcome === 'WIN').length;
     const netPnl = trades.reduce((sum, t) => sum + t.netPnl, 0);
+    const totalR = trades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0);
     return {
       total: trades.length,
       wins,
       losses: trades.length - wins,
       winRate: trades.length ? wins / trades.length : null,
       netPnl,
+      totalR: Number(totalR.toFixed(3)),
+      avgR: trades.length ? Number((totalR / trades.length).toFixed(3)) : null,
       openCount: this.#open.size,
       rejectedCount: this.#rejected.size,
     };

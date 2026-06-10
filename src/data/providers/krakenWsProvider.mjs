@@ -26,6 +26,7 @@ export class KrakenWsProvider {
   #url;
   #symbols;
   #onTick;
+  #onLiveness;
   #logger;
   #now;
   #WebSocketImpl;
@@ -41,6 +42,7 @@ export class KrakenWsProvider {
   constructor({
     symbols = CONFIG.symbols.watchlist,
     onTick,
+    onLiveness = null,
     url = CONFIG.feed.ws.url,
     config = CONFIG.feed.ws,
     logger = console,
@@ -50,6 +52,7 @@ export class KrakenWsProvider {
     if (!WebSocketImpl) throw new Error('WebSocket desteği yok (Node ≥22 gerekli)');
     this.#symbols = symbols.filter((s) => WS_SYMBOLS[s]);
     this.#onTick = onTick;
+    this.#onLiveness = onLiveness;
     this.#url = url;
     this.#config = config;
     this.#logger = logger;
@@ -79,7 +82,10 @@ export class KrakenWsProvider {
       this.#reconnectAttempt = 0;
       const pairs = this.#symbols.map((s) => WS_SYMBOLS[s]);
       ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'trade', symbol: pairs } }));
-      ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'ticker', symbol: pairs } }));
+      // event_trigger 'bbo': ticker her en-iyi-fiyat değişiminde akar.
+      // Varsayılan 'trades' olsaydı sakin paritede ticker da susar ve
+      // canlılık sinyali kaybolurdu (sahte FEED_STALE → haksız SOFT_LOCK).
+      ws.send(JSON.stringify({ method: 'subscribe', params: { channel: 'ticker', symbol: pairs, event_trigger: 'bbo' } }));
       this.#logger.info(`[kraken-ws] bağlandı, abone: ${pairs.join(', ')}`);
     });
 
@@ -126,6 +132,8 @@ export class KrakenWsProvider {
         const ask = Number(t.ask);
         if (bid > 0 && ask > 0) this.#lastBidAsk.set(symbol, { bid, ask });
         this.telemetry.tickers += 1;
+        // Ticker = canlılık kanıtı: işlem sessizliği feed ölümü değildir
+        this.#onLiveness?.(symbol);
       }
       return;
     }

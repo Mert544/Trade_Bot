@@ -38,7 +38,7 @@ export function createEcosystem({
 } = {}) {
   const rawBus = new EventBus();
   const bus = new ProtocolBus({ bus: rawBus, logger, now });
-  const stateManager = new StateManager({ persistPath });
+  const stateManager = new StateManager({ persistPath, initialEquity: CONFIG.account.startingEquity });
 
   // Gölge mod varsayılandır; canlı broker yalnızca açıkça enjekte edilir.
   const executionBroker = mode === 'live' && broker ? broker : new PaperBroker();
@@ -67,7 +67,12 @@ export function createEcosystem({
   const oracle = new Oracle({ bus, calendarProvider, now, logger });
   const governor = new Governor({ bus, stateManager, now, logger });
   const structurer = new Structurer({ bus, now, onObservation, confidenceFn });
-  const sniper = new Sniper({ bus, broker: executionBroker, now, logger });
+  const sniper = new Sniper({
+    bus, broker: executionBroker, now, logger,
+    // Dolmayan emir = "FILL YOK" sinyal sonucu (kapalı katalog korunur:
+    // bus olayı değil gözlemci kancası; signalHub EXPIRED+unfilled işler)
+    onOrderExpired: (info) => signalHub.markUnfilled(info),
+  });
   const sanitizer = new Sanitizer({ bus, now });
   const regimeDetector = new RegimeDetector({ bus, now });
   const coordinator = new DecisionCoordinator({ bus, now });
@@ -142,7 +147,14 @@ export function createEcosystem({
   bus.subscribe('ORDER_FILLED', (env) => {
     const candidateEnv = candidateCache.get(env.payload.candidateId);
     const lotSize = approvalCache.get(env.payload.candidateId) ?? 1;
-    if (candidateEnv) shadowLedger.openVirtual(candidateEnv, { lotSize });
+    if (candidateEnv) {
+      // Gerçek fill bilgisi deftere taşınır: broker maliyeti zaten uyguladı
+      shadowLedger.openVirtual(candidateEnv, {
+        lotSize,
+        fillPrice: env.payload.fillPrice,
+        commission: env.payload.commission ?? null,
+      });
+    }
   });
   bus.subscribe('HEARTBEAT', (env) => circuitBreaker.recordHeartbeat(env.payload.agentId));
   // Ek A: TRADE_POSTMORTEM aboneliği — stateManager arşivi (kapasiteli)

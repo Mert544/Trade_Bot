@@ -8,13 +8,15 @@
  * asla açılmaz — submitOrder stopLoss alanı zorunludur.
  */
 
+import { CONFIG } from '../config/defaults.mjs';
+
 export class BrokerInterface {
   /** @returns {Promise<{ spread: number, bid: number, ask: number }>} */
   async getQuote(_symbol) { throw new Error('getQuote uygulanmadı'); }
 
   /**
    * @param {{ symbol, side, volume, type, price, stopLoss, takeProfit }} order
-   * @returns {Promise<{ brokerOrderId, fillPrice, filledAt }>}
+   * @returns {Promise<{ brokerOrderId, pending: boolean, fillPrice?, filledAt?, commission? }>}
    */
   async submitOrder(order) {
     if (order.stopLoss === undefined || order.stopLoss === null) {
@@ -34,19 +36,34 @@ export class BrokerInterface {
 }
 
 /**
- * PaperBroker — gölge mod / test icra arka ucu.
- * Maliyetsiz simülasyon YASAKTIR (7.1): spread, komisyon ve modellenmiş
- * slippage her fill'e dahil edilir.
+ * PaperBroker — gölge mod icra arka ucu.
+ *
+ * GERÇEKÇİLİK KURALLARI (bakiye turu):
+ *   1. Limit emir ANINDA DOLMAZ: fiyat limite değene kadar bekler
+ *      (eski davranış hayalet işlemler üretiyordu — sinyal FVG geri test
+ *      fiyatına konur, fiyat oraya hiç dönmeyebilir).
+ *   2. Ücretler yüzdeseldir (kripto gerçeği): pazarlanabilir dolum = taker,
+ *      bekleyen limit dolumu = maker. Sabit $/lot komisyon FX kafasıydı.
+ *   3. Slippage fiyat oranlıdır ve limit fiyatını ASLA aşamaz
+ *      (limit emrin tanımı: bu fiyattan kötüsü kabul edilmez).
  */
 export class PaperBroker extends BrokerInterface {
-  #quotes = new Map(); // symbol -> { bid, ask }
-  #positions = new Map();
+  #quotes = new Map();       // symbol -> { bid, ask }
+  #positions = new Map();    // brokerOrderId -> pozisyon
+  #pendingOrders = new Map();// brokerOrderId -> bekleyen limit emri
   #orderSeq = 0;
-  #costModel;
+  #fees;
+  #now;
 
-  constructor({ costModel = { commissionPerLot: 3.0, slippageModel: () => 0.0001 } } = {}) {
+  constructor({
+    feeTakerPct = CONFIG.account.feeTakerPct,
+    feeMakerPct = CONFIG.account.feeMakerPct,
+    slippagePct = CONFIG.account.slippagePct,
+    now = () => Date.now(),
+  } = {}) {
     super();
-    this.#costModel = costModel;
+    this.#fees = { feeTakerPct, feeMakerPct, slippagePct };
+    this.#now = now;
   }
 
   setQuote(symbol, { bid, ask }) {
@@ -61,26 +78,75 @@ export class PaperBroker extends BrokerInterface {
 
   async _submit(order) {
     const q = await this.getQuote(order.symbol);
-    const slippage = this.#costModel.slippageModel(order);
-    const base = order.side === 'BUY' ? q.ask : q.bid;
-    const fillPrice = order.side === 'BUY' ? base + slippage : base - slippage;
     const brokerOrderId = `paper-${++this.#orderSeq}`;
-    this.#positions.set(brokerOrderId, {
-      brokerOrderId,
+
+    if (order.type === 'LIMIT') {
+      const marketable = order.side === 'BUY' ? q.ask <= order.price : q.bid >= order.price;
+      if (!marketable) {
+        this.#pendingOrders.set(brokerOrderId, { ...order, brokerOrderId, placedAt: this.#now() });
+        return { brokerOrderId, pending: true };
+      }
+    }
+    return this.#fill({ ...order, brokerOrderId }, q, { maker: false });
+  }
+
+  #fill(order, q, { maker }) {
+    let fillPrice;
+    if (maker) {
+      // Bekleyen limit dolumu: tam limit fiyatından (maker)
+      fillPrice = order.price;
+    } else {
+      const base = order.side === 'BUY' ? q.ask : q.bid;
+      const slip = base * (this.#fees.slippagePct / 100);
+      const raw = order.side === 'BUY' ? base + slip : base - slip;
+      // Limit fiyatı slippage ile bile aşılamaz
+      fillPrice = order.type === 'LIMIT'
+        ? (order.side === 'BUY' ? Math.min(raw, order.price) : Math.max(raw, order.price))
+        : raw;
+    }
+    const feePct = maker ? this.#fees.feeMakerPct : this.#fees.feeTakerPct;
+    const commission = fillPrice * order.volume * (feePct / 100);
+    this.#positions.set(order.brokerOrderId, {
+      brokerOrderId: order.brokerOrderId,
       symbol: order.symbol,
       side: order.side,
       volume: order.volume,
       entryPrice: fillPrice,
       stopLoss: order.stopLoss,
       takeProfit: order.takeProfit ?? null,
-      commission: this.#costModel.commissionPerLot * order.volume,
-      openedAt: Date.now(),
+      commission,
+      maker,
+      openedAt: this.#now(),
     });
-    return { brokerOrderId, fillPrice, filledAt: Date.now() };
+    return { brokerOrderId: order.brokerOrderId, pending: false, fillPrice, commission, maker, filledAt: this.#now() };
+  }
+
+  /**
+   * Fiyat güncellemesi: bekleyen limitler dolar mı? Dolumlar listesi döner.
+   * Sniper her temiz kotasyonda çağırır (tick-seviyesi gerçekçilik).
+   */
+  checkPendingFills(symbol) {
+    const q = this.#quotes.get(symbol);
+    if (!q) return [];
+    const fills = [];
+    for (const [id, order] of this.#pendingOrders) {
+      if (order.symbol !== symbol) continue;
+      const touched = order.side === 'BUY' ? q.ask <= order.price : q.bid >= order.price;
+      if (touched) {
+        this.#pendingOrders.delete(id);
+        fills.push(this.#fill(order, q, { maker: true }));
+      }
+    }
+    return fills;
   }
 
   async cancelOrder(brokerOrderId) {
-    this.#positions.delete(brokerOrderId);
+    return this.#pendingOrders.delete(brokerOrderId);
+  }
+
+  pendingOrders(symbol = null) {
+    const all = [...this.#pendingOrders.values()];
+    return symbol ? all.filter((o) => o.symbol === symbol) : all;
   }
 
   async closePosition(brokerOrderId) {
@@ -90,8 +156,9 @@ export class PaperBroker extends BrokerInterface {
     const exitPrice = pos.side === 'BUY' ? q.bid : q.ask;
     this.#positions.delete(brokerOrderId);
     const direction = pos.side === 'BUY' ? 1 : -1;
+    const exitFee = exitPrice * pos.volume * (this.#fees.feeTakerPct / 100);
     const grossPnl = (exitPrice - pos.entryPrice) * direction * pos.volume;
-    return { exitPrice, grossPnl, netPnl: grossPnl - pos.commission, closedAt: Date.now() };
+    return { exitPrice, grossPnl, netPnl: grossPnl - pos.commission - exitFee, closedAt: this.#now() };
   }
 
   async fetchOpenPositions() {

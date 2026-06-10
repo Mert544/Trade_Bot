@@ -201,12 +201,55 @@ test('uçtan uca geri besleme: onay → fill → stop vuruşu → CLOSED + Gover
   });
   assert.equal(proposal.proposed, true);
 
+  // Gerçekçi limit akışı: fiyat giriş bölgesine dönmeden fill yok
+  assert.equal(eco.shadowLedger.stats().openCount, 0, 'fill öncesi sanal pozisyon yok');
+  eco.broker.setQuote('BTCUSD', { bid: 99.97, ask: 99.99 });
+  await eco.sniper.onQuote('BTCUSD', {});
+  assert.equal(eco.shadowLedger.stats().openCount, 1, 'geri test dolumu sanal defteri açar');
+
   const equityBefore = eco.stateManager.get('equity');
   eco.shadowLedger.onPrice('BTCUSD', 98.9); // stop vuruşu
+  await new Promise((r) => setTimeout(r, 10)); // async onClose zinciri
 
-  assert.ok(hubEvents.some((e) => e.type === 'CLOSED' && e.outcome === 'LOSS'), 'sinyal CLOSED/LOSS olmalı');
+  const closed = hubEvents.find((e) => e.type === 'CLOSED');
+  assert.ok(closed && closed.outcome === 'LOSS', 'sinyal CLOSED/LOSS olmalı');
   assert.ok(eco.stateManager.get('equity') < equityBefore, 'kayıp equity\'e işlenir');
   assert.equal(eco.governor.streak, -1, 'Governor ardışık sonuç serisi güncellenir');
   assert.equal(eco.shadowLedger.stats().losses, 1);
+  // R-multiple: stop vuruşu ≈ −1R (maliyetlerle bir miktar altında)
+  const trade = eco.shadowLedger.closedTrades()[0];
+  assert.ok(trade.rMultiple <= -1 && trade.rMultiple > -1.6, `stop ≈ −1R bekleniyordu: ${trade.rMultiple}`);
+  eco.stop();
+});
+
+test('fill olmayan onaylı sinyal TTL sonunda UNFILLED/EXPIRED olur (uygulanabilirlik ölçüsü)', async () => {
+  const clock = { t: Date.UTC(2026, 5, 10, 13, 0) };
+  const eco = createEcosystem({
+    mode: 'shadow', logger: silentLogger, now: () => clock.t,
+    calendarProvider: { fetchToday: async () => [] },
+  });
+  eco.governor.start(); eco.structurer.start(); eco.sniper.start(); eco.signalHub.start();
+  const hubEvents = [];
+  eco.signalHub.addSink({ onSignalEvent: (type, s) => hubEvents.push({ type, unfilled: s.unfilled }) });
+
+  await eco.oracle.tick();
+  eco.broker.setQuote('BTCUSD', { bid: 99.99, ask: 100.01 });
+  await eco.structurer.updateHtfBias('BTCUSD', { htfBias: BIAS.LONG, dolLevel: 103 });
+  await eco.structurer.updateNarrativePhase('BTCUSD', { phase: MMXM_PHASE.MANIPULATION, alignedWithBias: true });
+  await eco.structurer.proposeSetup('BTCUSD', {
+    side: 'BUY', entry: 100, stop: 99, targets: [103],
+    setupFamily: 'SWEEP_MSS_FVG', mssConfirmed: true,
+  });
+
+  // Fiyat girişe hiç dönmüyor; TTL (90sn) aşılıyor
+  clock.t += 120_000;
+  eco.broker.setQuote('BTCUSD', { bid: 100.5, ask: 100.52 });
+  await eco.sniper.onQuote('BTCUSD', {});
+
+  const expired = hubEvents.find((e) => e.type === 'EXPIRED');
+  assert.ok(expired, 'EXPIRED olayı yayınlanmalı');
+  assert.equal(expired.unfilled, true, 'unfilled bayrağı taşımalı');
+  assert.equal(eco.shadowLedger.stats().openCount, 0, 'hayalet pozisyon yok');
+  assert.equal(eco.broker.pendingOrders().length, 0, 'broker bekleyeni iptal edildi');
   eco.stop();
 });

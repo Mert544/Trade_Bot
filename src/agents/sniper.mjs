@@ -25,16 +25,21 @@ export class Sniper {
 
   #approvals = new Map();   // candidateId -> { approval payload, correlationId, receivedAt }
   #candidates = new Map();  // candidateId -> SETUP_CANDIDATE zarfı
+  #pendingOrders = new Map(); // brokerOrderId -> bekleyen limit takibi
   #spreadHistory = new Map(); // symbol -> [{ at, spread }]
   #embargoActive = false;
   #unsubscribers = [];
+  #onOrderExpired;
 
-  constructor({ bus, broker, config = CONFIG, now = () => Date.now(), logger = console } = {}) {
+  constructor({ bus, broker, config = CONFIG, now = () => Date.now(), logger = console, onOrderExpired = null } = {}) {
     this.#bus = bus;
     this.#broker = broker;
     this.#config = config;
     this.#now = now;
     this.#logger = logger;
+    // Kapalı olay kataloğu korunur: emir iptali bus olayı değil, gözlemci
+    // kancasıdır (onObservation emsali) — signalHub UNFILLED'i buradan öğrenir
+    this.#onOrderExpired = onOrderExpired;
   }
 
   start() {
@@ -43,7 +48,22 @@ export class Sniper {
         this.#candidates.set(env.msgId, env);
       }),
       this.#bus.subscribe('RISK_APPROVAL', (env) => this.#onApproval(env)),
-      this.#bus.subscribe('EMBARGO_ON', () => { this.#embargoActive = true; }),
+      this.#bus.subscribe('EMBARGO_ON', async () => {
+        this.#embargoActive = true;
+        // Anayasa 5.1: ambargo penceresi açılınca bekleyen emirler iptal edilir
+        for (const [brokerOrderId, tracked] of this.#pendingOrders) {
+          this.#pendingOrders.delete(brokerOrderId);
+          await this.#broker.cancelOrder(brokerOrderId);
+          this.#cleanup(tracked.candidateId);
+          this.#onOrderExpired?.({
+            candidateId: tracked.candidateId,
+            correlationId: tracked.correlationId,
+            symbol: tracked.candidate.symbol,
+            entry: tracked.candidate.entry,
+            reason: 'ambargo: bekleyen emir iptal edildi (K1)',
+          });
+        }
+      }),
       this.#bus.subscribe('EMBARGO_OFF', () => { this.#embargoActive = false; }),
       this.#bus.subscribe('STRUCTURE_INVALIDATED', (env) => {
         for (const id of env.payload.invalidatedCandidates) {
@@ -138,8 +158,74 @@ export class Sniper {
       takeProfit: candidate.targets?.[0] ?? null,
     });
 
+    // Limit pazarlanabilir değil: emir bekler. Dolum onQuote'ta, iptal
+    // TTL'de — anında dolum varsayımı (eski davranış) hayalet işlemler
+    // üretiyordu (fiyat giriş bölgesine hiç dönmeyebilir).
+    if (fill.pending) {
+      this.#pendingOrders.set(fill.brokerOrderId, {
+        brokerOrderId: fill.brokerOrderId,
+        candidateId,
+        correlationId,
+        candidate,
+        approval,
+        submittedAt,
+        signalBornAt: candidateEnv.timestamp,
+        expiresAt: candidateEnv.timestamp + approval.ttl,
+      });
+      return { executed: false, pending: true, brokerOrderId: fill.brokerOrderId };
+    }
+
+    await this.#reportFill({ fill, candidate, candidateId, correlationId, approval, quote, submittedAt, signalBornAt: candidateEnv.timestamp });
+    this.#cleanup(candidateId);
+    return { executed: true, brokerOrderId: fill.brokerOrderId };
+  }
+
+  /**
+   * Temiz kotasyon akışı (FeedManager onQuote → buraya):
+   *   1. Bekleyen limitlerin dolumu denetlenir (tick gerçekçiliği)
+   *   2. TTL'i dolan bekleyen emirler iptal edilir → sinyal "FILL YOK"
+   */
+  async onQuote(symbol, _quote) {
+    const fills = this.#broker.checkPendingFills?.(symbol) ?? [];
+    for (const fill of fills) {
+      const tracked = this.#pendingOrders.get(fill.brokerOrderId);
+      if (!tracked) continue;
+      this.#pendingOrders.delete(fill.brokerOrderId);
+      const quote = await this.#broker.getQuote(symbol);
+      await this.#reportFill({
+        fill,
+        candidate: tracked.candidate,
+        candidateId: tracked.candidateId,
+        correlationId: tracked.correlationId,
+        approval: tracked.approval,
+        quote,
+        submittedAt: tracked.submittedAt,
+        signalBornAt: tracked.signalBornAt,
+      });
+      this.#cleanup(tracked.candidateId);
+    }
+
+    // TTL süpürmesi: dolmayan emir iptal edilir; "fill olmadı" ayrı ve
+    // değerli bir sonuçtur (sinyallerin kaçı uygulanabilirdi?)
+    const now = this.#now();
+    for (const [brokerOrderId, tracked] of this.#pendingOrders) {
+      if (now <= tracked.expiresAt) continue;
+      this.#pendingOrders.delete(brokerOrderId);
+      await this.#broker.cancelOrder(brokerOrderId);
+      this.#cleanup(tracked.candidateId);
+      this.#onOrderExpired?.({
+        candidateId: tracked.candidateId,
+        correlationId: tracked.correlationId,
+        symbol: tracked.candidate.symbol,
+        entry: tracked.candidate.entry,
+        reason: `TTL doldu, giriş fiyatı ${tracked.candidate.entry} görülmedi`,
+      });
+    }
+  }
+
+  async #reportFill({ fill, candidate, candidateId, correlationId, approval, quote, submittedAt, signalBornAt }) {
     const latencyMs = this.#now() - submittedAt;
-    const totalLatencyMs = this.#now() - candidateEnv.timestamp;
+    const totalLatencyMs = this.#now() - signalBornAt;
     const slippage = Math.abs(fill.fillPrice - candidate.entry);
 
     await this.#publish('ORDER_FILLED', {
@@ -148,6 +234,8 @@ export class Sniper {
       requestedPrice: candidate.entry,
       fillPrice: fill.fillPrice,
       latencyMs,
+      commission: fill.commission ?? 0,
+      maker: fill.maker ?? false,
     }, { correlationId });
 
     // Slippage bütçesi denetimi (post-fill ölçüm + alarm)
@@ -155,22 +243,18 @@ export class Sniper {
       await this.#publish('SLIPPAGE_ALERT', { candidateId, slippage }, { correlationId });
     }
 
-    const report = {
+    await this.#publish('EXECUTION_REPORT', {
       candidateId,
       slippage,
       spreadAtFill: quote.spread,
-      costTotal: slippage + quote.spread,
-    };
-    await this.#publish('EXECUTION_REPORT', report, {
+      costTotal: slippage + quote.spread + (fill.commission ?? 0),
+    }, {
       correlationId,
       evidence: [
-        `Fill: ${fill.fillPrice} (istenen ${candidate.entry}), slippage ${slippage.toFixed(6)}`,
+        `Fill: ${fill.fillPrice} (istenen ${candidate.entry}), ${fill.maker ? 'maker' : 'taker'}, komisyon ${(fill.commission ?? 0).toFixed(6)}`,
         `Toplam gecikme: ${totalLatencyMs}ms (bütçe ${this.#config.execution.maxLatencyMs}ms)`,
       ],
     });
-
-    this.#cleanup(candidateId);
-    return { executed: true, report, brokerOrderId: fill.brokerOrderId };
   }
 
   #cleanup(candidateId) {

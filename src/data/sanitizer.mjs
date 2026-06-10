@@ -145,6 +145,17 @@ export class Sanitizer {
     return { verdict: TICK_VERDICT.CLEAN, zScore };
   }
 
+  /**
+   * Canlılık dokunuşu: fiyat işlemeden bayatlık saatini tazeler.
+   * Kullanım: WS ticker güncellemeleri — sakin paritede dakikalarca işlem
+   * olmayabilir ama ticker akıyorsa feed CANLIDIR (işlem sessizliği ≠ feed ölümü).
+   */
+  touch(source, symbol) {
+    const key = `${source}:${symbol}`;
+    this.#lastTickAt.set(key, this.#now());
+    this.#staleFlagged.delete(key);
+  }
+
   /** Filtre 4: Bayatlık bekçisi — periyodik çağrılır. */
   async checkStaleness() {
     const now = this.#now();

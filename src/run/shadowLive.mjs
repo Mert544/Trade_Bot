@@ -42,7 +42,11 @@ export async function runShadowLive({
   // Kalıcılık + istatistik önce kurulur; journal replay ile restart'a dayanıklı
   const journal = new Journal({ logger });
   const stats = new SetupStats();
-  journal.replay((record) => stats.ingestJournalRecord(record));
+  const equityCurve = []; // restart'a dayanıklı equity eğrisi (journal'dan)
+  journal.replay((record) => {
+    stats.ingestJournalRecord(record);
+    if (record.kind === 'equity') equityCurve.push({ at: record.at, equity: record.equity });
+  });
 
   // Killzone-dışı gözlem adayları (E6): bus'a çıkmaz, ama journal + istatistik +
   // hipotetik akıbet izlemesine girer — killzone etkisinin doğal A/B verisi.
@@ -81,8 +85,20 @@ export async function runShadowLive({
     logger,
     onObservation,
     confidenceFn: (quality) => attentionModel.score(quality),
+    persistPath: 'state/state.json', // bakiye/DD restart'a dayanıklı (journal ile tutarlı)
   });
   ecoRef = eco;
+
+  // Equity eğrisi: her kapanan gölge işlemde nokta (dashboard + journal)
+  if (equityCurve.length === 0) {
+    equityCurve.push({ at: Date.now(), equity: eco.stateManager.get('equity') });
+  }
+  eco.bus.subscribe('TRADE_POSTMORTEM', () => {
+    const point = { at: Date.now(), equity: eco.stateManager.get('equity') };
+    equityCurve.push(point);
+    if (equityCurve.length > 2000) equityCurve.shift();
+    journal.append({ kind: 'equity', equity: point.equity, dailyPnl: eco.stateManager.get('dailyPnl') });
+  });
 
   // Sinyal sink zinciri: journal (kalıcı) + istatistik + Telegram (varsa)
   eco.signalHub.addSink(journal);
@@ -133,6 +149,8 @@ export async function runShadowLive({
     onQuote: (q) => {
       eco.broker.setQuote(q.symbol, { bid: q.bid, ask: q.ask });
       eco.sniper.recordSpread(q.symbol, q.spread);
+      // Bekleyen limit dolum/TTL denetimi (kotasyon güncel olduktan sonra)
+      eco.sniper.onQuote(q.symbol, q).catch((err) => logger.error(`[sniper] onQuote hatası: ${err.message}`));
       eco.shadowLedger.onPrice(q.symbol, q.price);
       profile.onSpread(q.symbol, (q.spread / q.price) * 100);
     },
@@ -186,6 +204,8 @@ export async function runShadowLive({
       onTick: (tick) => {
         feed.ingestPush(tick).catch((err) => logger.error(`[feed] push hatası: ${err.message}`));
       },
+      // İşlem sessizliği ≠ feed ölümü: ticker aktıkça bayatlık saati tazelenir
+      onLiveness: (symbol) => eco.sanitizer.touch('kraken-ws', symbol),
     });
     krakenWs.start();
     logger.info('[feed] PUSH modu: Kraken WS birincil, Coinbase REST doğrulama');
@@ -218,6 +238,15 @@ export async function runShadowLive({
       setupStats: stats.breakdown(),
       correlations: mtfEngine.correlationMatrix(),
       attention: { promoted: attentionModel.promoted, metrics: attentionModel.metrics },
+      account: {
+        startingEquity: CONFIG.account.startingEquity,
+        equity: snap.equity,
+        dailyPnl: snap.dailyPnl,
+        dailyDDPct: eco.stateManager.dailyDrawdownPct(),
+        totalDDPct: eco.stateManager.totalDrawdownPct(),
+        ...eco.shadowLedger.stats(),
+      },
+      equityCurve: equityCurve.slice(-300),
     };
   };
   const dashboard = new DashboardServer({ snapshotProvider, logger });
@@ -230,6 +259,18 @@ export async function runShadowLive({
     const nowDayOpen = trueDayOpen(new Date());
     if (nowDayOpen !== currentDayOpen) {
       currentDayOpen = nowDayOpen;
+      // Günlük rapor: sıfırlamadan ÖNCE gönderilir (Ek D — Patron raporu)
+      if (telegram.enabled) {
+        const sh = eco.shadowLedger.stats();
+        const equity = eco.stateManager.get('equity');
+        const dayPnl = eco.stateManager.get('dailyPnl');
+        telegram.sendText([
+          '📊 <b>GÜNLÜK RAPOR</b>',
+          `Bakiye: <b>${equity.toFixed(2)}$</b> (gün: ${dayPnl >= 0 ? '+' : ''}${dayPnl.toFixed(2)}$)`,
+          `İşlem: ${sh.total} (${sh.wins}K/${sh.losses}Z) | Toplam R: ${sh.totalR} | Ort R: ${sh.avgR ?? '—'}`,
+          `Günlük DD: %${eco.stateManager.dailyDrawdownPct().toFixed(2)} | Veto kaydı: ${sh.rejectedCount}`,
+        ].join('\n'));
+      }
       eco.stateManager.rolloverDay();
       logger.info('[rollover] NY gün dönüşü: günlük DD sayaçları sıfırlandı, takvim yenileniyor');
       await eco.oracle.syncCalendar();

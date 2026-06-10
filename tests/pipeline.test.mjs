@@ -104,6 +104,14 @@ test('uçtan uca gölge zinciri: aday → onay → fill → rapor, tek correlati
   });
   assert.equal(proposal.proposed, true);
 
+  // Gerçekçi limit akışı: emir BEKLER (ask 100.01 > limit 100) —
+  // anında dolum yok. Fiyat giriş bölgesine dönünce dolar.
+  assert.deepEqual(chain.map((c) => c.type), ['SETUP_CANDIDATE', 'RISK_APPROVAL', 'ORDER_SUBMITTED']);
+  assert.equal((await eco.broker.fetchOpenPositions()).length, 0, 'fiyat dönmeden pozisyon açılamaz');
+
+  eco.broker.setQuote('BTCUSD', { bid: 99.97, ask: 99.99 }); // FVG geri testi
+  await eco.sniper.onQuote('BTCUSD', {});
+
   const types = chain.map((c) => c.type);
   assert.deepEqual(types, ['SETUP_CANDIDATE', 'RISK_APPROVAL', 'ORDER_SUBMITTED', 'ORDER_FILLED', 'EXECUTION_REPORT']);
   assert.equal(new Set(chain.map((c) => c.correlationId)).size, 1, 'tüm zincir tek correlationId taşımalı');
@@ -111,6 +119,7 @@ test('uçtan uca gölge zinciri: aday → onay → fill → rapor, tek correlati
   const positions = await eco.broker.fetchOpenPositions();
   assert.equal(positions.length, 1);
   assert.equal(positions[0].stopLoss, 99, 'sunucu tarafı stop zorunlu');
+  assert.equal(positions[0].entryPrice, 100, 'bekleyen limit tam limit fiyatından dolar (maker)');
 });
 
 test('veto edilen aday gölge deftere kaydedilir (veto isabet ölçümü)', async () => {

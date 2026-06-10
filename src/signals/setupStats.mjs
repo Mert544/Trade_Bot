@@ -31,6 +31,8 @@ export class SetupStats {
         wins: 0, losses: 0,           // gerçek (gölge defter) sonuçlar
         hypoWins: 0, hypoLosses: 0,   // hipotetik (veto/gözlem) akıbetler
         vetoed: 0, observed: 0, expired: 0, invalidated: 0,
+        unfilled: 0,                  // onaylandı ama fiyat girişe dönmedi
+        rSum: 0,                      // R-multiple toplamı (bakiyeden bağımsız ölçü)
       });
     }
     return this.#cells.get(key);
@@ -48,9 +50,13 @@ export class SetupStats {
       case 'CLOSED':
         if (signal.outcome === 'WIN') cell.wins += 1;
         else if (signal.outcome === 'LOSS') cell.losses += 1;
+        if (typeof signal.rMultiple === 'number') cell.rSum += signal.rMultiple;
         break;
       case 'VETOED': cell.vetoed += 1; break;
-      case 'EXPIRED': cell.expired += 1; break;
+      case 'EXPIRED':
+        cell.expired += 1;
+        if (signal.unfilled) cell.unfilled += 1; // uygulanabilirlik ölçüsü
+        break;
       case 'INVALIDATED': cell.invalidated += 1; break;
       case 'HYPOTHETICAL':
         if (signal.hypotheticalOutcome === 'WOULD_HAVE_WON') cell.hypoWins += 1;
@@ -106,6 +112,10 @@ export class SetupStats {
           realSamples: real,
           hypoSamples: hypo,
           winRate,
+          avgR: real > 0 ? Number((c.rSum / real).toFixed(3)) : null,
+          // Fill oranı: onaylı sinyallerin kaçı gerçekten dolabildi?
+          fillRate: real + c.unfilled > 0 ? Number((real / (real + c.unfilled)).toFixed(3)) : null,
+          unfilled: c.unfilled,
           vetoed: c.vetoed,
           observed: c.observed,
           ...this.tierOf(samples),
