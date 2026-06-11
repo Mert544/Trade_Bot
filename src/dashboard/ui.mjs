@@ -294,7 +294,9 @@ export const DASHBOARD_HTML = /* html */ `<!DOCTYPE html>
         + (mtf.po3 && mtf.po3.phase && mtf.po3.phase !== 'UNKNOWN'
           ? '<br>PO3: ' + esc(mtf.po3.phase) + (mtf.po3.expectedDelivery ? ' → ' + esc(mtf.po3.expectedDelivery) : '') : '')
         + '<br>rejim: ' + esc(row.regime || '—') + ' · spread: ' + (row.spread != null ? row.spread.toFixed(6) : '—')
-        + '<br>bar: ' + (mtf.bars3m || 0) + '×' + esc(tfs.trigger) + ' ' + (mtf.bars15m || 0) + '×' + esc(tfs.narrative) + ' ' + (mtf.bars4h || 0) + '×4H</div></div>';
+        + '<br>bar: ' + (mtf.bars3m || 0) + '×' + esc(tfs.trigger) + ' ' + (mtf.bars15m || 0) + '×' + esc(tfs.narrative) + ' ' + (mtf.bars4h || 0) + '×4H'
+        + (mtf.gate ? '<br>kapı: ' + esc(mtf.gate.stage) + (mtf.gate.detail ? ' (' + esc(mtf.gate.detail) + ')' : '') : '')
+        + '</div></div>';
     });
     if (s.correlations && s.correlations.length) {
       html += '<div class="meta" style="padding:6px 4px 0;text-align:left">korelasyon: ' + s.correlations.map(function (c) {

@@ -134,6 +134,8 @@ export class MTFEngine {
     }
     if (bars4h.length) await this.#analyze4H(symbol);
     if (bars15m.length) await this.#analyze15M(symbol);
+    // Kapı teşhisi ilk bar kapanışını beklemesin: ısınma verisiyle ön tarama
+    if (st.bars3m.length) await this.#scanTrigger(symbol);
     this.#logger.info(`[mtf] ${symbol} ısınma: ${bars4h.length}×4H, ${bars15m.length}×${st.tfProfile.narrative}, ${st.bars3m.length}×${st.tfProfile.trigger}`);
   }
 
@@ -238,19 +240,38 @@ export class MTFEngine {
 
   // --- 3m: tetik taraması (sweep → MSS → FVG) ---
 
+  /** Tarama kapı durumu: "neden sinyal yok?" sorusunun canlı cevabı. */
+  #gate(symbol, stage, detail = null) {
+    this.#sym(symbol).lastGate = { stage, detail, at: Date.now() };
+  }
+
   async #scanTrigger(symbol) {
     const st = this.#sym(symbol);
     const bars = st.bars3m;
-    if (bars.length < this.#config.swingK * 2 + 5) return;
+    if (bars.length < this.#config.swingK * 2 + 5) {
+      this.#gate(symbol, 'YETERSIZ_BAR', `${bars.length} tetik barı (min ${this.#config.swingK * 2 + 5})`);
+      return;
+    }
 
     const ctx = this.#structurer.contextOf(symbol);
-    if (!ctx.narrativeConfirmed) return; // üst katman hizası yoksa tarama bile yok
-    if (!isMarketOpen(symbol, new Date(bars.at(-1).openTime))) return; // kapalı seansta sinyal yok
+    if (!ctx.narrativeConfirmed) {
+      // üst katman hizası yoksa tarama bile yok
+      this.#gate(symbol, ctx.htfBias === 'NEUTRAL' ? 'BIAS_YOK' : 'ANLATI_TEYITSIZ',
+        ctx.htfBias === 'NEUTRAL' ? '4H yapı yönsüz' : `bias ${ctx.htfBias} ama faz ${ctx.phase}`);
+      return;
+    }
+    if (!isMarketOpen(symbol, new Date(bars.at(-1).openTime))) {
+      this.#gate(symbol, 'SEANS_KAPALI');
+      return; // kapalı seansta sinyal yok
+    }
 
     const swings = detectSwings(bars, this.#config.swingK);
     const pools = findLiquidityPools(swings, { tolerancePct: this.#config.eqTolerancePct });
     const sweep = detectSweep(bars, pools, { lookback: this.#config.sweepLookbackBars });
-    if (!sweep) return;
+    if (!sweep) {
+      this.#gate(symbol, 'SWEEP_YOK', `son ${this.#config.sweepLookbackBars} barda likidite süpürmesi yok`);
+      return;
+    }
 
     const mss = detectMSS(bars, swings, sweep);
 
@@ -259,10 +280,16 @@ export class MTFEngine {
       st.lastSweepStatTime = sweep.time;
       this.#profile.recordSweep(symbol, { followedByMss: mss.confirmed });
     }
-    if (!mss.confirmed) return;
+    if (!mss.confirmed) {
+      this.#gate(symbol, 'MSS_YOK', `sweep var (${sweep.direction} @ ${sweep.level}) ama yapı kırılımı teyitsiz`);
+      return;
+    }
 
     const mssBarTime = bars[mss.barIndex].openTime;
-    if (mssBarTime <= st.lastMssBarTime) return; // aynı MSS'ten mükerrer aday üretme
+    if (mssBarTime <= st.lastMssBarTime) {
+      this.#gate(symbol, 'MSS_ISLENDI', 'aynı MSS daha önce değerlendirildi');
+      return; // aynı MSS'ten mükerrer aday üretme
+    }
 
     // Parite karakter ölçekleme: FVG asgari boyutu paritenin tipik bar
     // genliğine göre normalize edilir (tek beden eşik = gizli overfit)
@@ -271,7 +298,10 @@ export class MTFEngine {
       sinceIndex: sweep.barIndex,
       minSizePct: this.#config.fvgMinSizePct * volScale,
     });
-    if (!fvg) return;
+    if (!fvg) {
+      this.#gate(symbol, 'FVG_YOK', 'MSS teyitli ama giriş bölgesi (FVG) oluşmadı');
+      return;
+    }
 
     st.lastMssBarTime = mssBarTime;
     const side = mss.direction === 'BULLISH' ? 'BUY' : 'SELL';
@@ -353,8 +383,12 @@ export class MTFEngine {
       evidence,
     });
     if (result.proposed) {
+      this.#gate(symbol, 'ADAY_URETILDI', `${side} @ ${entry.toFixed(4)}`);
       this.#logger.info(`[mtf] ${symbol} SETUP_CANDIDATE: ${side} @ ${entry.toFixed(4)} stop=${stop} hedef=${targets[0] ?? '—'}`);
-    } else if (!result.observed) {
+    } else if (result.observed) {
+      this.#gate(symbol, 'KILLZONE_DISI_GOZLEM', 'dizilim tam ama killzone dışı — gözlem grubuna kaydedildi');
+    } else {
+      this.#gate(symbol, 'ADAY_ELENDI', result.reason);
       this.#logger.info(`[mtf] ${symbol} aday elendi: ${result.reason}`);
     }
   }
@@ -367,6 +401,7 @@ export class MTFEngine {
       bars15m: st.s15.bars.length,
       bars4h: st.s4h.bars.length,
       tfs: { trigger: st.tfProfile.trigger, narrative: st.tfProfile.narrative, bias: '4H' },
+      gate: st.lastGate ?? null, // son tarama kapısı: "neden sinyal yok" cevabı
       structurer: this.#structurer.contextOf(symbol),
       po3: this.#po3?.context(symbol) ?? null,
       profile: this.#profile?.profile(symbol) ?? null,

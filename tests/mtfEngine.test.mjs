@@ -86,6 +86,32 @@ function setup() {
   return { clock, bus, events, structurer, engine };
 }
 
+test('kapı teşhisi: tarama aşamaları snapshot.gate üzerinden izlenir', async () => {
+  const { clock, structurer, engine } = setup();
+  clock.t = Date.UTC(2026, 5, 10, 13, 0); // Çarşamba — FX/kripto açık
+
+  // Aşama 1: yetersiz bar
+  await engine.onBar3m({ symbol: 'BTCUSD', openTime: clock.t, open: 100, high: 101, low: 99, close: 100 });
+  assert.equal(engine.snapshot('BTCUSD').gate.stage, 'YETERSIZ_BAR');
+
+  // Aşama 2: bar yeterli ama 4H bias yok
+  const M3 = 3 * 60 * 1000;
+  for (let i = 1; i < 10; i += 1) {
+    await engine.onBar3m({ symbol: 'BTCUSD', openTime: clock.t + i * M3, open: 100, high: 100.2, low: 99.9, close: 100.1 });
+  }
+  assert.equal(engine.snapshot('BTCUSD').gate.stage, 'BIAS_YOK');
+
+  // Aşama 3: bias var, anlatı teyitsiz
+  await structurer.updateHtfBias('BTCUSD', { htfBias: BIAS.LONG, dolLevel: 115 });
+  await engine.onBar3m({ symbol: 'BTCUSD', openTime: clock.t + 10 * M3, open: 100.1, high: 100.3, low: 100, close: 100.2 });
+  assert.equal(engine.snapshot('BTCUSD').gate.stage, 'ANLATI_TEYITSIZ');
+
+  // Aşama 4: anlatı teyitli, sweep bekleniyor
+  await structurer.updateNarrativePhase('BTCUSD', { phase: MMXM_PHASE.MANIPULATION, alignedWithBias: true });
+  await engine.onBar3m({ symbol: 'BTCUSD', openTime: clock.t + 11 * M3, open: 100.2, high: 100.35, low: 100.1, close: 100.3 });
+  assert.equal(engine.snapshot('BTCUSD').gate.stage, 'SWEEP_YOK');
+});
+
 test('TimeframeSeries: 3m barlar 15M bara doğru birleşir', () => {
   const series = new TimeframeSeries({ intervalMs: M15 });
   const closes = [100, 101, 99, 102, 100.5];

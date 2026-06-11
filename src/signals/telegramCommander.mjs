@@ -166,6 +166,9 @@ export class TelegramCommander {
       case '/durum':
         this.#reply(this.#renderStatus());
         break;
+      case '/neden':
+        this.#reply(this.#renderWhy());
+        break;
       case '/bakiye':
         this.#reply(this.#renderBalance());
         break;
@@ -192,10 +195,37 @@ export class TelegramCommander {
       'Onaylı sinyaller, vetolar ve sonuçlar otomatik düşer.',
       '',
       '/durum — killzone, kilit, sembol bias/faz tablosu',
+      '/neden — sembol başına "neden sinyal yok" kapı teşhisi',
       '/bakiye — sanal hesap, PnL, drawdown, R',
       '/sinyaller — son 5 sinyal',
       '/rapor — günlük özet',
     ].join('\n');
+  }
+
+  /** Sinyal kapı teşhisi: her sembol hangi aşamada takılı? */
+  #renderWhy() {
+    const s = this.#statusProvider();
+    const GATE_TR = {
+      YETERSIZ_BAR: '⏳ veri birikiyor',
+      BIAS_YOK: '➖ 4H yapı yönsüz (HH/HL veya LH/LL dizisi yok)',
+      ANLATI_TEYITSIZ: '🔍 bias var, anlatı fazı (manipülasyon) bekleniyor',
+      SEANS_KAPALI: '🌙 seans kapalı',
+      SWEEP_YOK: '💧 likidite süpürmesi bekleniyor',
+      MSS_YOK: '⚡ sweep oldu, yapı kırılımı (MSS) bekleniyor',
+      MSS_ISLENDI: '✔️ son dizilim değerlendirildi, yenisi bekleniyor',
+      FVG_YOK: '📐 MSS teyitli, giriş bölgesi (FVG) bekleniyor',
+      KILLZONE_DISI_GOZLEM: '👁 dizilim TAM ama killzone dışı (gözlemde)',
+      ADAY_URETILDI: '✅ SİNYAL ÜRETİLDİ',
+      ADAY_ELENDI: '❌ aday üretildi ama elendi',
+    };
+    const lines = ['🔬 <b>NEDEN SİNYAL YOK?</b> (kapı teşhisi)'];
+    for (const r of s.symbols ?? []) {
+      const g = r.mtf?.gate;
+      const txt = g ? (GATE_TR[g.stage] ?? g.stage) + (g.detail ? ` — ${g.detail}` : '') : 'henüz tarama yok';
+      lines.push(`<b>${r.symbol}</b>: ${txt}`);
+    }
+    lines.push('', 'Zincir: bias → anlatı → killzone → sweep → MSS → FVG → kurul onayı.');
+    return lines.join('\n');
   }
 
   #renderStatus() {
