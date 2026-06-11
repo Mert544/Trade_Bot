@@ -69,15 +69,19 @@ export class Sanitizer {
   #bus;
   #config;
   #now;
+  #isMarketOpen;
   #windows = new Map();       // `${source}:${symbol}` -> son N fiyat
   #lastTimestamps = new Map();
   #lastTickAt = new Map();    // staleness izleme
   #staleFlagged = new Set();
 
-  constructor({ bus, config = CONFIG.sanitizer, now = () => Date.now() } = {}) {
+  constructor({ bus, config = CONFIG.sanitizer, now = () => Date.now(), isMarketOpen = () => true } = {}) {
     this.#bus = bus;
     this.#config = config;
     this.#now = now;
+    // Seans bekçisi: kapalı piyasada sessizlik DOĞALDIR, feed ölümü değildir
+    // (aksi halde FX hafta sonu boyunca sahte FEED_STALE → haksız SOFT_LOCK)
+    this.#isMarketOpen = isMarketOpen;
   }
 
   /**
@@ -162,6 +166,18 @@ export class Sanitizer {
     const staleEvents = [];
     for (const [key, lastAt] of this.#lastTickAt) {
       if (this.#staleFlagged.has(key)) continue;
+      const symbol = key.split(':')[1];
+      if (!this.#isMarketOpen(symbol, new Date(now))) {
+        // Kapalı piyasa: saat tazelenir ki açılışta bayatlık birikmiş olmasın
+        this.#lastTickAt.set(key, now);
+        continue;
+      }
+      if (!this.#isMarketOpen(symbol, new Date(lastAt))) {
+        // Kapalı→açık geçişi: son tick kapalı dönemden kalma — sessizlik
+        // hafta sonuna aittir, açılış anından itibaren yeniden sayılır
+        this.#lastTickAt.set(key, now);
+        continue;
+      }
       if (now - lastAt > this.#config.staleFeedTimeoutMs) {
         this.#staleFlagged.add(key);
         const [source, symbol] = key.split(':');

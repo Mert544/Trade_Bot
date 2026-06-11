@@ -18,8 +18,11 @@ import { CONFIG } from '../config/defaults.mjs';
 import { detectSwings, findLiquidityPools, markSweptPools } from './swings.mjs';
 import { classifyBias, classifyMMXM, detectSweep, detectMSS, detectFVG } from './structure.mjs';
 import { dealingRange, classifyPDZone, oteZone, inZone, detectOrderBlock, zonesOverlap, PD_ZONE } from './pdArrays.mjs';
+import { instrumentSpec } from '../config/instruments.mjs';
+import { isMarketOpen } from '../time/marketHours.mjs';
 
-const TF_MS = { '15M': 15 * 60 * 1000, '4H': 4 * 60 * 60 * 1000 };
+const TF_MS = { '3m': 3 * 60 * 1000, '15M': 15 * 60 * 1000, '1H': 60 * 60 * 1000, '4H': 4 * 60 * 60 * 1000 };
+const DEFAULT_TF_PROFILE = { narrative: '15M', trigger: '3m' };
 
 /** Küçük barları epoch hizalı büyük barlara birleştirir. */
 export class TimeframeSeries {
@@ -99,10 +102,14 @@ export class MTFEngine {
 
   #sym(symbol) {
     if (!this.#state.has(symbol)) {
+      // Varlık sınıfı hiyerarşisi: kripto 4H→15M→3m (tick verisi var),
+      // FX/endeks 4H→1H→15M (TD gerçek 15M OHLC barları). Bias hep 4H.
+      const tfProfile = instrumentSpec(symbol)?.tfProfile ?? DEFAULT_TF_PROFILE;
       this.#state.set(symbol, {
-        s15: new TimeframeSeries({ intervalMs: TF_MS['15M'], maxLength: this.#config.maxSeriesLength }),
+        tfProfile,
+        s15: new TimeframeSeries({ intervalMs: TF_MS[tfProfile.narrative], maxLength: this.#config.maxSeriesLength }),
         s4h: new TimeframeSeries({ intervalMs: TF_MS['4H'], maxLength: this.#config.maxSeriesLength }),
-        bars3m: [],
+        bars3m: [], // tetik serisi (adı tarihsel: kripto 3m; FX'te 15M barlar)
         lastMssBarTime: 0,
         // E7 histerezis: faz değişimi ancak ardışık teyitle Structurer'a iner
         phaseCandidate: null,
@@ -113,18 +120,28 @@ export class MTFEngine {
     return this.#state.get(symbol);
   }
 
-  /** Açılış ısınması: tarihsel barlarla bağlam kur ve ilk analizi çalıştır. */
-  async warmup(symbol, { bars4h = [], bars15m = [] }) {
+  /**
+   * Açılış ısınması: tarihsel barlarla bağlam kur ve ilk analizi çalıştır.
+   * bars15m = anlatı serisi (kripto: 15M, FX: 1H); barsTrigger = tetik serisi
+   * (FX: TD 15M tarihçesi — tetik taraması ilk bardan itibaren bağlamlı).
+   */
+  async warmup(symbol, { bars4h = [], bars15m = [], barsTrigger = [] }) {
     const st = this.#sym(symbol);
     st.s4h.seed(bars4h);
     st.s15.seed(bars15m);
+    if (barsTrigger.length) {
+      st.bars3m = barsTrigger.slice(-this.#config.maxSeriesLength).map((b) => ({ ...b }));
+    }
     if (bars4h.length) await this.#analyze4H(symbol);
     if (bars15m.length) await this.#analyze15M(symbol);
-    this.#logger.info(`[mtf] ${symbol} ısınma: ${bars4h.length}×4H, ${bars15m.length}×15M bar`);
+    this.#logger.info(`[mtf] ${symbol} ısınma: ${bars4h.length}×4H, ${bars15m.length}×${st.tfProfile.narrative}, ${st.bars3m.length}×${st.tfProfile.trigger}`);
   }
 
-  /** FeedManager onBar kancası: her kapanan 3m bar buraya gelir. */
-  async onBar3m(bar) {
+  /**
+   * Tetik barı girişi: kripto için kapanan 3m bar (tick agregasyonu),
+   * FX için TD'den gelen kapanmış 15M bar. Hiyerarşi yukarı doğru birleşir.
+   */
+  async onTriggerBar(bar) {
     const st = this.#sym(bar.symbol);
     const b = { openTime: bar.openTime, open: bar.open, high: bar.high, low: bar.low, close: bar.close };
     st.bars3m.push(b);
@@ -133,15 +150,22 @@ export class MTFEngine {
     // Derinleştirme katmanları kapanmış barla beslenir (look-ahead yok)
     this.#profile?.onBar(bar.symbol, b);
     this.#po3?.onBar(bar.symbol, b);
+    // Korelasyon matrisi 15M getirilerle tanımlı: FX'te tetik barı zaten 15M
+    if (st.tfProfile.trigger === '15M') this.#matrix?.onClose(bar.symbol, b.close);
 
-    const closed15 = st.s15.merge(b);
-    if (closed15) {
-      this.#matrix?.onClose(bar.symbol, closed15.close);
-      const closed4h = st.s4h.merge(closed15);
+    const closedNarr = st.s15.merge(b);
+    if (closedNarr) {
+      if (st.tfProfile.narrative === '15M') this.#matrix?.onClose(bar.symbol, closedNarr.close);
+      const closed4h = st.s4h.merge(closedNarr);
       if (closed4h) await this.#analyze4H(bar.symbol);
       await this.#analyze15M(bar.symbol);
     }
     await this.#scanTrigger(bar.symbol);
+  }
+
+  /** Geriye uyumluluk: kripto yolu tarihsel adıyla çağırır. */
+  async onBar3m(bar) {
+    return this.onTriggerBar(bar);
   }
 
   // --- 4H: bias + DOL ---
@@ -221,6 +245,7 @@ export class MTFEngine {
 
     const ctx = this.#structurer.contextOf(symbol);
     if (!ctx.narrativeConfirmed) return; // üst katman hizası yoksa tarama bile yok
+    if (!isMarketOpen(symbol, new Date(bars.at(-1).openTime))) return; // kapalı seansta sinyal yok
 
     const swings = detectSwings(bars, this.#config.swingK);
     const pools = findLiquidityPools(swings, { tolerancePct: this.#config.eqTolerancePct });
@@ -301,6 +326,9 @@ export class MTFEngine {
       volScale: Number(volScale.toFixed(3)),
       regime: this.#context.regime(symbol) ?? 'UNKNOWN',
       killzone: this.#context.killzone() ?? 'NONE',
+      // Varlık sınıfı: istatistik ayrımı için (kripto/FX örneklemleri karışmaz)
+      assetClass: instrumentSpec(symbol)?.assetClass ?? 'CRYPTO',
+      triggerTf: st.tfProfile.trigger,
     };
 
     const evidence = [
@@ -338,6 +366,7 @@ export class MTFEngine {
       bars3m: st.bars3m.length,
       bars15m: st.s15.bars.length,
       bars4h: st.s4h.bars.length,
+      tfs: { trigger: st.tfProfile.trigger, narrative: st.tfProfile.narrative, bias: '4H' },
       structurer: this.#structurer.contextOf(symbol),
       po3: this.#po3?.context(symbol) ?? null,
       profile: this.#profile?.profile(symbol) ?? null,
@@ -352,8 +381,8 @@ export class MTFEngine {
   /** Bar serisi erişimi (dashboard mum grafiği — yalnız kapanmış barlar). */
   series(symbol, tf) {
     const st = this.#sym(symbol);
-    if (tf === '3m') return [...st.bars3m];
-    if (tf === '15M') return [...st.s15.bars];
+    if (tf === st.tfProfile.trigger) return [...st.bars3m];
+    if (tf === st.tfProfile.narrative) return [...st.s15.bars];
     if (tf === '4H') return [...st.s4h.bars];
     return [];
   }

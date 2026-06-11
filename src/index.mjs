@@ -10,6 +10,7 @@
  */
 
 import { CONFIG } from './config/defaults.mjs';
+import { isMarketOpen } from './time/marketHours.mjs';
 import { EventBus } from './core/eventBus.mjs';
 import { ProtocolBus } from './core/protocolBus.mjs';
 import { StateManager } from './core/stateManager.mjs';
@@ -73,7 +74,7 @@ export function createEcosystem({
     // bus olayı değil gözlemci kancası; signalHub EXPIRED+unfilled işler)
     onOrderExpired: (info) => signalHub.markUnfilled(info),
   });
-  const sanitizer = new Sanitizer({ bus, now });
+  const sanitizer = new Sanitizer({ bus, now, isMarketOpen });
   const regimeDetector = new RegimeDetector({ bus, now });
   const coordinator = new DecisionCoordinator({ bus, now });
   const signalHub = new SignalHub({ bus, stateManager, now, logger });

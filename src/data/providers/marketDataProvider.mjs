@@ -27,7 +27,12 @@ export async function fetchJson(url, { fetchImpl = fetch, timeoutMs = 8000, head
     signal: AbortSignal.timeout(timeoutMs),
     headers: { 'User-Agent': 'ict-bot/5.0', Accept: 'application/json', ...headers },
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
+  if (!res.ok) {
+    // GÜVENLİK: hata mesajındaki URL'den API anahtarı temizlenir —
+    // loglar paylaşılabilir, anahtar asla log'a sızmamalı
+    const redacted = url.replace(/apikey=[^&]+/i, 'apikey=***');
+    throw new Error(`HTTP ${res.status} — ${redacted}`);
+  }
   return res.json();
 }
 

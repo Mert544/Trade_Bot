@@ -23,11 +23,11 @@ export class SetupStats {
     this.#tiers = tiers;
   }
 
-  #cell(family, regime, killzone) {
-    const key = `${family}|${regime}|${killzone}`;
+  #cell(family, assetClass, regime, killzone) {
+    const key = `${family}|${assetClass}|${regime}|${killzone}`;
     if (!this.#cells.has(key)) {
       this.#cells.set(key, {
-        family, regime, killzone,
+        family, assetClass, regime, killzone,
         wins: 0, losses: 0,           // gerçek (gölge defter) sonuçlar
         hypoWins: 0, hypoLosses: 0,   // hipotetik (veto/gözlem) akıbetler
         vetoed: 0, observed: 0, expired: 0, invalidated: 0,
@@ -40,7 +40,9 @@ export class SetupStats {
 
   #keyOf(signal) {
     const q = signal.quality ?? {};
-    return [signal.setupFamily ?? 'UNKNOWN', q.regime ?? 'UNKNOWN', q.killzone ?? 'NONE'];
+    // Varlık sınıfı ayrı boyut: kripto örneklemiyle FX örneklemini aynı
+    // hücrede toplamak gizli overfit'tir (farklı mikro-yapı, farklı maliyet)
+    return [signal.setupFamily ?? 'UNKNOWN', q.assetClass ?? 'CRYPTO', q.regime ?? 'UNKNOWN', q.killzone ?? 'NONE'];
   }
 
   /** SignalHub sink arayüzü (canlı akış). */
@@ -69,14 +71,14 @@ export class SetupStats {
   /** Killzone-dışı gözlem adayı (Structurer onObservation kancasından). */
   recordObservation(obs) {
     const q = obs.quality ?? {};
-    const cell = this.#cell(obs.setupFamily ?? 'UNKNOWN', q.regime ?? 'UNKNOWN', 'DIŞI');
+    const cell = this.#cell(obs.setupFamily ?? 'UNKNOWN', q.assetClass ?? 'CRYPTO', q.regime ?? 'UNKNOWN', 'DIŞI');
     cell.observed += 1;
   }
 
   /** Gözlem adayının hipotetik akıbeti. */
   recordObservationOutcome(obs, outcome) {
     const q = obs.quality ?? {};
-    const cell = this.#cell(obs.setupFamily ?? 'UNKNOWN', q.regime ?? 'UNKNOWN', 'DIŞI');
+    const cell = this.#cell(obs.setupFamily ?? 'UNKNOWN', q.assetClass ?? 'CRYPTO', q.regime ?? 'UNKNOWN', 'DIŞI');
     if (outcome === 'WOULD_HAVE_WON') cell.hypoWins += 1;
     else if (outcome === 'WOULD_HAVE_LOST') cell.hypoLosses += 1;
   }
@@ -106,6 +108,7 @@ export class SetupStats {
         const winRate = samples > 0 ? (c.wins + c.hypoWins) / samples : null;
         return {
           family: c.family,
+          assetClass: c.assetClass,
           regime: c.regime,
           killzone: c.killzone,
           samples,

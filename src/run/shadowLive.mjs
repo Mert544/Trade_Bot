@@ -21,6 +21,10 @@ import { FeedManager } from '../data/feedManager.mjs';
 import { KrakenWsProvider } from '../data/providers/krakenWsProvider.mjs';
 import { MTFEngine } from '../analysis/mtfEngine.mjs';
 import { trueDayOpen } from '../time/nyClock.mjs';
+import { TwelveDataBars } from '../data/providers/twelveDataBars.mjs';
+import { CTraderProvider } from '../data/providers/ctraderProvider.mjs';
+import { instrumentSpec, symbolsByClass, ASSET_CLASS } from '../config/instruments.mjs';
+import { isMarketOpen } from '../time/marketHours.mjs';
 import { Journal } from '../persistence/journal.mjs';
 import { SetupStats } from '../signals/setupStats.mjs';
 import { TelegramNotifier } from '../signals/telegramNotifier.mjs';
@@ -213,6 +217,89 @@ export async function runShadowLive({
     logger.info('[feed] POLL modu: Kraken REST birincil');
   }
 
+  // --- FX hattı (F2): Twelve Data gerçek 15M OHLC barları ---
+  // cTrader tick akışı bağlanana dek BİRİNCİL FX kaynağı; anahtar yoksa
+  // FX hattı sessizce devre dışı (kripto hattı etkilenmez).
+  const fxSymbols = process.env.TWELVEDATA_API_KEY ? symbolsByClass(ASSET_CLASS.FX) : [];
+  const lastFxBar = new Map();
+  let tdBars = null;
+
+  const handleFxBar = async (bar) => {
+    const spec = instrumentSpec(bar.symbol);
+    const half = (spec.typicalSpread ?? 0) / 2;
+    lastFxBar.set(bar.symbol, bar);
+
+    // Bar-içi gerçekçilik (bid/ask tick yokken yaklaşım — cTrader'la tick'e terfi):
+    // 1) düşük uçta bekleyen ALIŞ limitleri denetlenir, 2) yüksek uçta SATIŞ
+    // limitleri, 3) defter stop/hedefleri olumsuz uç önce (long'lar için
+    // muhafazakâr), 4) kapanış kotasyonuna oturulur.
+    eco.broker.setQuote(bar.symbol, { bid: bar.low - half, ask: bar.low + half });
+    await eco.sniper.onQuote(bar.symbol, {});
+    eco.broker.setQuote(bar.symbol, { bid: bar.high - half, ask: bar.high + half });
+    await eco.sniper.onQuote(bar.symbol, {});
+    eco.shadowLedger.onPrice(bar.symbol, bar.low);
+    eco.shadowLedger.onPrice(bar.symbol, bar.high);
+    eco.broker.setQuote(bar.symbol, { bid: bar.close - half, ask: bar.close + half });
+
+    await eco.regimeDetector.onClose(bar.symbol, bar.close);
+    await mtfEngine.onTriggerBar(bar);
+  };
+
+  if (fxSymbols.length > 0) {
+    tdBars = new TwelveDataBars({
+      symbols: fxSymbols,
+      interval: '15M',
+      pollMs: CONFIG.feed.tdBars.pollMs,
+      logger,
+      onBar: (bar) => handleFxBar(bar).catch((err) => logger.error(`[fx] bar hatası: ${err.message}`)),
+    });
+    let fxWarmupIndex = 0;
+    for (const symbol of fxSymbols) {
+      // TD ücretsiz katman: 8 kredi/dk — sembol başına 3 tarihçe çağrısı,
+      // semboller arası bekleme ile dakikalık pencere taşırılmaz (429 önlemi)
+      if (fxWarmupIndex > 0) {
+        await new Promise((r) => setTimeout(r, CONFIG.feed.tdBars.warmupDelayMs));
+      }
+      fxWarmupIndex += 1;
+      try {
+        const [bars4h, bars1h, bars15] = await Promise.all([
+          tdBars.fetchHistory(symbol, '4H', 240),
+          tdBars.fetchHistory(symbol, '1H', 300),
+          tdBars.fetchHistory(symbol, '15M', 400),
+        ]);
+        await mtfEngine.warmup(symbol, { bars4h, bars15m: bars1h, barsTrigger: bars15 });
+        for (const b of bars15) {
+          po3.onBar(symbol, b);
+          matrix.onClose(symbol, b.close);
+          profile.onBar(symbol, b);
+        }
+        if (bars15.length) {
+          tdBars.seedLastEmitted(symbol, bars15.at(-1).openTime);
+          const spec = instrumentSpec(symbol);
+          const half = (spec.typicalSpread ?? 0) / 2;
+          const last = bars15.at(-1);
+          lastFxBar.set(symbol, last);
+          eco.broker.setQuote(symbol, { bid: last.close - half, ask: last.close + half });
+        }
+        const ctx = eco.structurer.contextOf(symbol);
+        const po3Ctx = po3.context(symbol);
+        logger.info(`[fx] ${symbol} başlangıç: bias=${ctx.htfBias} dol=${ctx.dolLevel ?? '—'} faz=${ctx.phase} po3=${po3Ctx.phase}`);
+      } catch (err) {
+        logger.warn(`[fx] ${symbol} ısınma başarısız: ${err.message}`);
+      }
+    }
+    tdBars.start();
+    logger.info(`[fx] hat aktif: ${fxSymbols.join(', ')} (TD 15M barları, ${CONFIG.feed.tdBars.pollMs / 60000}dk yoklama)`);
+  } else {
+    logger.info('[fx] TWELVEDATA_API_KEY yok — FX hattı devre dışı (kripto hattı sürer)');
+  }
+
+  // cTrader hazırlık teşhisi (tel protokolü sonraki sürüm — bkz. provider notu)
+  const ctrader = new CTraderProvider({ logger });
+  ctrader.start();
+
+  const allSymbols = [...CONFIG.symbols.watchlist, ...fxSymbols];
+
   // Dashboard: anlık görüntü sağlayıcı tüm katmanları tek JSON'da toplar
   const snapshotProvider = () => {
     const snap = eco.stateManager.snapshot();
@@ -220,13 +307,15 @@ export async function runShadowLive({
       time: Date.now(),
       mode: eco.mode,
       state: { killzone: snap.killzone, embargo: snap.embargo, riskLock: snap.riskLock, equity: snap.equity },
-      symbols: CONFIG.symbols.watchlist.map((symbol) => {
+      symbols: allSymbols.map((symbol) => {
         const q = feed.lastQuote(symbol);
+        const fxBar = lastFxBar.get(symbol);
         return {
           symbol,
-          price: q?.price ?? null,
-          spread: q?.spread ?? null,
+          price: q?.price ?? fxBar?.close ?? null,
+          spread: q?.spread ?? instrumentSpec(symbol)?.typicalSpread ?? null,
           regime: snap.regime?.[symbol]?.regime ?? null,
+          marketOpen: isMarketOpen(symbol),
           mtf: mtfEngine.snapshot(symbol),
         };
       }),

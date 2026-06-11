@@ -11,6 +11,8 @@
  * Maliyetsiz simülasyon YASAKTIR: spread, komisyon ve modellenmiş slippage dahildir.
  */
 
+import { instrumentSpec } from '../config/instruments.mjs';
+
 export class ShadowLedger {
   #trades = [];          // kapanan sanal işlemler
   #open = new Map();     // candidateId -> açık sanal pozisyon
@@ -42,8 +44,9 @@ export class ShadowLedger {
   openVirtual(candidateEnvelope, { lotSize, strategyVersion = 'champion', fillPrice = null, commission = null }) {
     const c = candidateEnvelope.payload;
     const direction = c.side === 'BUY' ? 1 : -1;
+    const feeTakerPct = instrumentSpec(c.symbol)?.feeTakerPct ?? this.#costModel.feeTakerPct ?? 0;
     const entry = fillPrice ?? (c.entry + direction * (this.#costModel.slippage + this.#costModel.spread / 2));
-    const entryCommission = commission ?? entry * lotSize * ((this.#costModel.feeTakerPct ?? 0) / 100);
+    const entryCommission = commission ?? entry * lotSize * (feeTakerPct / 100);
     const riskAmount = Math.abs(entry - c.stop) * lotSize; // 1R tanımı
     this.#open.set(candidateEnvelope.msgId, {
       candidateId: candidateEnvelope.msgId,
@@ -85,7 +88,8 @@ export class ShadowLedger {
       if (hitStop || hitTarget) {
         const exit = hitStop ? pos.stop : pos.targets[0];
         const grossPnl = (exit - pos.entry) * direction * pos.lotSize;
-        const exitFee = exit * pos.lotSize * ((this.#costModel.feeTakerPct ?? 0) / 100);
+        const exitFeePct = instrumentSpec(pos.symbol)?.feeTakerPct ?? this.#costModel.feeTakerPct ?? 0;
+        const exitFee = exit * pos.lotSize * (exitFeePct / 100);
         const netPnl = grossPnl - pos.commission - exitFee;
         const trade = {
           ...pos,

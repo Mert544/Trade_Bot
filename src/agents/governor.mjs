@@ -14,6 +14,7 @@
  */
 
 import { CONFIG } from '../config/defaults.mjs';
+import { instrumentSpec } from '../config/instruments.mjs';
 
 const AGENT_ID = 'governor';
 const AGENT_VERSION = '1.0.0';
@@ -116,16 +117,22 @@ export class Governor {
     if (stopDistance <= 0) return { lotSize: 0, riskPct: 0, riskAmount: 0 };
     let lotSize = riskAmount / (stopDistance * pipValue);
 
-    // Hesap kısıtları (bakiye gerçekçiliği):
-    // 1. Nominal tavan: spot hesapta pozisyon değeri bakiyeyi aşamaz
+    // Hesap kısıtları — enstrüman spesifikasyonundan (varlık sınıfı katmanı):
+    // kripto spot 1x, FX demo 30x, metal/endeks 20x; tablo tek gerçek kaynak.
     const account = this.#config.account ?? {};
-    if (account.maxLeverage && entry > 0) {
-      const notionalCap = (equity * account.maxLeverage) / entry;
+    const spec = symbol ? instrumentSpec(symbol) : null;
+    const maxLeverage = spec?.maxLeverage ?? account.maxLeverage ?? 1;
+    if (maxLeverage && entry > 0) {
+      const notionalCap = (equity * maxLeverage) / entry;
       lotSize = Math.min(lotSize, notionalCap);
     }
-    // 2. Borsa asgari emir boyutu: altında kalan sinyal bu hesapla UYGULANAMAZ.
-    //    Sinyal yanlış değil, hesap küçük — gerekçe asgari bakiyeyi söyler.
-    const minOrder = symbol ? account.minOrderSize?.[symbol] ?? 0 : 0;
+    // Lot adımı: borsa/broker adımına AŞAĞI yuvarlanır (asla yukarı — risk
+    // artmaz). Epsilon: FP bölme artığı (24999.999…) bir adım aşağı düşürmesin.
+    const lotStep = spec?.lotStep ?? 0;
+    if (lotStep > 0) lotSize = Math.floor(lotSize / lotStep + 1e-9) * lotStep;
+    // Asgari emir boyutu: altında kalan sinyal bu hesapla UYGULANAMAZ.
+    // Sinyal yanlış değil, hesap küçük — gerekçe asgari bakiyeyi söyler.
+    const minOrder = spec?.minOrder ?? (symbol ? account.minOrderSize?.[symbol] ?? 0 : 0);
     if (minOrder > 0 && lotSize < minOrder) {
       const minRequiredEquity = riskPct > 0
         ? Math.ceil((minOrder * stopDistance * pipValue) / (riskPct / 100))

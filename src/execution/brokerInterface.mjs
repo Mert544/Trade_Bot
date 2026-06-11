@@ -9,6 +9,7 @@
  */
 
 import { CONFIG } from '../config/defaults.mjs';
+import { instrumentSpec } from '../config/instruments.mjs';
 
 export class BrokerInterface {
   /** @returns {Promise<{ spread: number, bid: number, ask: number }>} */
@@ -91,20 +92,25 @@ export class PaperBroker extends BrokerInterface {
   }
 
   #fill(order, q, { maker }) {
+    // Enstrüman bazlı maliyet profili: kripto yüzdesel ücret, FX/CFD spread-temelli
+    const spec = instrumentSpec(order.symbol);
+    const slippagePct = spec?.slippagePct ?? this.#fees.slippagePct;
     let fillPrice;
     if (maker) {
       // Bekleyen limit dolumu: tam limit fiyatından (maker)
       fillPrice = order.price;
     } else {
       const base = order.side === 'BUY' ? q.ask : q.bid;
-      const slip = base * (this.#fees.slippagePct / 100);
+      const slip = base * (slippagePct / 100);
       const raw = order.side === 'BUY' ? base + slip : base - slip;
       // Limit fiyatı slippage ile bile aşılamaz
       fillPrice = order.type === 'LIMIT'
         ? (order.side === 'BUY' ? Math.min(raw, order.price) : Math.max(raw, order.price))
         : raw;
     }
-    const feePct = maker ? this.#fees.feeMakerPct : this.#fees.feeTakerPct;
+    const feePct = maker
+      ? (spec?.feeMakerPct ?? this.#fees.feeMakerPct)
+      : (spec?.feeTakerPct ?? this.#fees.feeTakerPct);
     const commission = fillPrice * order.volume * (feePct / 100);
     this.#positions.set(order.brokerOrderId, {
       brokerOrderId: order.brokerOrderId,
@@ -161,7 +167,8 @@ export class PaperBroker extends BrokerInterface {
     const exitPrice = pos.side === 'BUY' ? q.bid : q.ask;
     this.#positions.delete(brokerOrderId);
     const direction = pos.side === 'BUY' ? 1 : -1;
-    const exitFee = exitPrice * pos.volume * (this.#fees.feeTakerPct / 100);
+    const exitFeePct = instrumentSpec(pos.symbol)?.feeTakerPct ?? this.#fees.feeTakerPct;
+    const exitFee = exitPrice * pos.volume * (exitFeePct / 100);
     const grossPnl = (exitPrice - pos.entryPrice) * direction * pos.volume;
     return { exitPrice, grossPnl, netPnl: grossPnl - pos.commission - exitFee, closedAt: this.#now() };
   }

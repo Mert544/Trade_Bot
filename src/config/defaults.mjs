@@ -91,6 +91,14 @@ export const CONFIG = Object.freeze({
       reconnectBaseMs: 1000,
       reconnectMaxMs: 60_000,
     },
+    // FX hattı: Twelve Data 15M bar yoklaması (ücretsiz katman bütçesi:
+    // 3 sembol × 6/saat × 24 ≈ 432 kredi/gün < 800)
+    tdBars: {
+      pollMs: 10 * 60 * 1000,
+      // Isınma kısıtlaması: 8 kredi/dk limiti — sembol başına 3 tarihçe
+      // çağrısı; semboller arası bekleme dakikalık pencereyi taşırmaz
+      warmupDelayMs: 25_000,
+    },
   },
 
   analysis: {

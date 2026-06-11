@@ -157,7 +157,7 @@ export const DASHBOARD_HTML = /* html */ `<!DOCTYPE html>
   }
 
   // --- Mum grafiği (vanilla canvas) ---
-  var chart = { symbol: null, tf: '15M', symbols: [], dol: null, lastPrice: null };
+  var chart = { symbol: null, tf: '15M', symbols: [], tfsBySymbol: {}, dol: null, lastPrice: null };
 
   function drawCandles(bars) {
     var canvas = $('chart');
@@ -239,11 +239,17 @@ export const DASHBOARD_HTML = /* html */ `<!DOCTYPE html>
       .catch(function () {});
   }
 
+  function tfsFor(symbol) {
+    // Varlık sınıfına göre hiyerarşi: kripto [3m,15M,4H], FX [15M,1H,4H]
+    var t = chart.tfsBySymbol[symbol];
+    return t ? [t.trigger, t.narrative, t.bias] : ['3m', '15M', '4H'];
+  }
   function renderTabs() {
     $('symTabs').innerHTML = chart.symbols.map(function (s) {
       return '<button class="tab' + (s === chart.symbol ? ' on' : '') + '" data-sym="' + esc(s) + '">' + esc(s.replace('USD', '')) + '</button>';
     }).join('');
-    var tfs = ['3m', '15M', '4H'];
+    var tfs = tfsFor(chart.symbol);
+    if (tfs.indexOf(chart.tf) === -1) chart.tf = tfs[0];
     $('tfTabs').innerHTML = tfs.map(function (t) {
       return '<button class="tab' + (t === chart.tf ? ' on' : '') + '" data-tf="' + t + '">' + t + '</button>';
     }).join('');
@@ -275,17 +281,20 @@ export const DASHBOARD_HTML = /* html */ `<!DOCTYPE html>
     var html = '';
     (s.symbols || []).forEach(function (row) {
       var mtf = row.mtf || {}; var st = mtf.structurer || {};
+      if (mtf.tfs) chart.tfsBySymbol[row.symbol] = mtf.tfs;
       if (row.symbol === chart.symbol) {
         chart.dol = st.dolLevel != null ? st.dolLevel : null;
         chart.lastPrice = row.price != null ? row.price : null;
       }
-      html += '<div class="sym"><div><div class="price">' + esc(row.symbol) + ' ' + (row.price != null ? row.price : '—') + '</div>'
+      var tfs = mtf.tfs || { trigger: '3m', narrative: '15M', bias: '4H' };
+      html += '<div class="sym"><div><div class="price">' + esc(row.symbol) + ' ' + (row.price != null ? row.price : '—')
+        + (row.marketOpen === false ? ' <span class="chip warn" style="font-size:9px">SEANS KAPALI</span>' : '') + '</div>'
         + '<div class="' + biasClass(st.htfBias) + '">' + esc(st.htfBias || '—') + (st.dolLevel != null ? ' → DOL ' + st.dolLevel : '') + '</div></div>'
         + '<div class="meta">faz: ' + esc(st.phase || '—') + (st.narrativeConfirmed ? ' ✓' : '')
         + (mtf.po3 && mtf.po3.phase && mtf.po3.phase !== 'UNKNOWN'
           ? '<br>PO3: ' + esc(mtf.po3.phase) + (mtf.po3.expectedDelivery ? ' → ' + esc(mtf.po3.expectedDelivery) : '') : '')
         + '<br>rejim: ' + esc(row.regime || '—') + ' · spread: ' + (row.spread != null ? row.spread.toFixed(6) : '—')
-        + '<br>bar: ' + (mtf.bars3m || 0) + '×3m ' + (mtf.bars15m || 0) + '×15M ' + (mtf.bars4h || 0) + '×4H</div></div>';
+        + '<br>bar: ' + (mtf.bars3m || 0) + '×' + esc(tfs.trigger) + ' ' + (mtf.bars15m || 0) + '×' + esc(tfs.narrative) + ' ' + (mtf.bars4h || 0) + '×4H</div></div>';
     });
     if (s.correlations && s.correlations.length) {
       html += '<div class="meta" style="padding:6px 4px 0;text-align:left">korelasyon: ' + s.correlations.map(function (c) {
@@ -323,12 +332,12 @@ export const DASHBOARD_HTML = /* html */ `<!DOCTYPE html>
 
     if (s.setupStats && s.setupStats.length) {
       var rows = s.setupStats.map(function (r) {
-        return '<tr><td>' + esc(r.family) + '</td><td>' + esc(r.regime) + '</td><td>' + esc(r.killzone) + '</td>'
+        return '<tr><td>' + esc(r.family) + '</td><td>' + esc(r.assetClass || '—') + '</td><td>' + esc(r.regime) + '</td><td>' + esc(r.killzone) + '</td>'
           + '<td>' + r.samples + '</td><td>' + (r.winRate != null ? (r.winRate*100).toFixed(0) + '%' : '—') + '</td>'
           + '<td>' + (r.avgR != null ? r.avgR : '—') + '</td><td>' + (r.fillRate != null ? (r.fillRate*100).toFixed(0) + '%' : '—') + '</td>'
           + '<td class="tier-' + r.tierClass + '">' + esc(r.tier) + '</td></tr>';
       }).join('');
-      $('stats').innerHTML = '<table><tr><th>Aile</th><th>Rejim</th><th>KZ</th><th>n</th><th>Kazanç</th><th>Ort R</th><th>Fill</th><th>Güven</th></tr>' + rows + '</table>';
+      $('stats').innerHTML = '<table><tr><th>Aile</th><th>Sınıf</th><th>Rejim</th><th>KZ</th><th>n</th><th>Kazanç</th><th>Ort R</th><th>Fill</th><th>Güven</th></tr>' + rows + '</table>';
     }
     renderSignals(s.signals || []);
   }

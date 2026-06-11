@@ -168,3 +168,34 @@ Monte Carlo kapısından geçtikten sonra verilir.
 - `dashboard.test.mjs` — HTML/snapshot/SSE uçları, setup istatistik kırılımı ve eşik etiketleri
 - `krakenWs.test.mjs` — WS abonelik/ayrıştırma/yeniden bağlanma (sahte WebSocket), push modu kuorum
 - `discipline.test.mjs` — post-mortem taksonomisi, faz histerezisi, look-ahead korumaları
+
+## Çoklu Varlık: Forex + Altın (+ Endeksler yolda)
+
+FX hattı `TWELVEDATA_API_KEY` env değişkeniyle aktifleşir (ücretsiz anahtar:
+twelvedata.com — **anahtarı asla repoya/commit'e yazmayın**):
+
+```bash
+TWELVEDATA_API_KEY=... npm run shadow   # kripto + EURUSD/GBPUSD/XAUUSD
+```
+
+- Veri: Twelve Data `time_series` gerçek 15M OHLC barları (fitiller dahil),
+  10 dk yoklama — ücretsiz kredi bütçesinin içinde (≈432/800 gün).
+- Hiyerarşi FX'te: 4H bias → 1H anlatı → 15M tetik (kripto: 4H→15M→3m).
+- Seans takvimi: Cum 17:00 NY kapanış / Paz 17:00 NY açılış — kapalı seansta
+  sinyal üretilmez, staleness bekçisi susar, TD kredisi harcanmaz.
+- Enstrüman tablosu (`src/config/instruments.mjs`): pip/lot adımı/min emir/
+  kaldıraç/maliyet profili — Governor lot hesabı ve PaperBroker ücretleri
+  sınıf farkındalıklı.
+- İstatistikler varlık sınıfına göre AYRI birikir (kripto ↔ FX örneklemi
+  karışmaz — gizli overfit önlemi).
+
+### cTrader (tick kalitesine terfi — sonraki adım)
+
+Endeksler (US100/US500) ve FX tick akışı için cTrader Open API demo hesabı:
+
+1. https://openapi.ctrader.com → ücretsiz uygulama kaydı → `CTRADER_CLIENT_ID`
+   + `CTRADER_CLIENT_SECRET`
+2. Playground'da demo hesabına izin → `CTRADER_ACCESS_TOKEN` (veya uygulamanın
+   verdiği base64 blob: `CTRADER_TOKEN_B64`) + `CTRADER_ACCOUNT_ID`
+3. Bot açılışta hazırlık teşhisi yapar (`[ctrader] beklemede — eksik: ...`);
+   kimlikler tamamlanınca protobuf tel protokolü bağlanacak (yol haritasında).
