@@ -189,13 +189,25 @@ TWELVEDATA_API_KEY=... npm run shadow   # kripto + EURUSD/GBPUSD/XAUUSD
 - İstatistikler varlık sınıfına göre AYRI birikir (kripto ↔ FX örneklemi
   karışmaz — gizli overfit önlemi).
 
-### cTrader (tick kalitesine terfi — sonraki adım)
+### cTrader Remote MCP — FX + Endeks birincil kanalı ✅
 
-Endeksler (US100/US500) ve FX tick akışı için cTrader Open API demo hesabı:
+cTrader uygulamasındaki **Settings → Remote MCP** token'ı yeterlidir
+(uygulama kaydı/OAuth GEREKMEZ; token'ı asla repoya yazmayın):
 
-1. https://openapi.ctrader.com → ücretsiz uygulama kaydı → `CTRADER_CLIENT_ID`
-   + `CTRADER_CLIENT_SECRET`
-2. Playground'da demo hesabına izin → `CTRADER_ACCESS_TOKEN` (veya uygulamanın
-   verdiği base64 blob: `CTRADER_TOKEN_B64`) + `CTRADER_ACCOUNT_ID`
-3. Bot açılışta hazırlık teşhisi yapar (`[ctrader] beklemede — eksik: ...`);
-   kimlikler tamamlanınca protobuf tel protokolü bağlanacak (yol haritasında).
+```bash
+CTRADER_TOKEN_B64=<base64 blob> npm run shadow
+# kripto + EURUSD/GBPUSD/XAUUSD + US500/US100 — gerçek bid/ask spread'lerle
+```
+
+- Kanal: https://mcp.ctrader.com (443 — her ağdan erişilir), JSON-RPC/SSE.
+- get_spot_prices 10sn'de bir gerçek bid/ask (icra hattı gerçek spread görür);
+  get_trendbars 60sn'de bir kapanmış M_15 barları (fitiller gerçek).
+- Fiyatlar 10⁵ ölçekli tamsayıdan çözülür; oluşmakta olan bar asla yayılmaz.
+- MCP oturumu eşzamanlı istek desteklemez: tüm RPC'ler kuyrukta serileşir
+  (canlıda 404 fırtınası olarak tespit edildi); kısa ömürlü oturumlar
+  şeffaf yeniden başlatma + tek tekrar ile telafi edilir.
+- Öncelik: MCP > Twelve Data (yedek, yalnız FX) > devre dışı.
+
+Sıradaki terfi: FIX 4.4 Price oturumu (cTrader Settings → FIX API) ile
+gerçek TICK akışı — 5211 portu geliştirme ortamından kapalı olduğu için
+kullanıcı makinesinde test edilecek (CTRADER_FIX_PASSWORD env ile).

@@ -22,7 +22,7 @@ import { KrakenWsProvider } from '../data/providers/krakenWsProvider.mjs';
 import { MTFEngine } from '../analysis/mtfEngine.mjs';
 import { trueDayOpen } from '../time/nyClock.mjs';
 import { TwelveDataBars } from '../data/providers/twelveDataBars.mjs';
-import { CTraderProvider } from '../data/providers/ctraderProvider.mjs';
+import { CTraderMcp, CTraderMcpFeed } from '../data/providers/ctraderMcp.mjs';
 import { instrumentSpec, symbolsByClass, ASSET_CLASS } from '../config/instruments.mjs';
 import { isMarketOpen } from '../time/marketHours.mjs';
 import { Journal } from '../persistence/journal.mjs';
@@ -217,12 +217,38 @@ export async function runShadowLive({
     logger.info('[feed] POLL modu: Kraken REST birincil');
   }
 
-  // --- FX hattı (F2): Twelve Data gerçek 15M OHLC barları ---
-  // cTrader tick akışı bağlanana dek BİRİNCİL FX kaynağı; anahtar yoksa
-  // FX hattı sessizce devre dışı (kripto hattı etkilenmez).
-  const fxSymbols = process.env.TWELVEDATA_API_KEY ? symbolsByClass(ASSET_CLASS.FX) : [];
+  // --- FX + Endeks hattı: kaynak önceliği cTrader MCP > Twelve Data ---
+  // MCP (CTRADER_TOKEN_B64): gerçek bid/ask spot + M_15 barları + ENDEKSLER.
+  // TD (TWELVEDATA_API_KEY): yalnız FX, sentetik spread — MCP yoksa yedek.
+  const mcp = new CTraderMcp({ logger });
+  const fxSymbols = mcp.enabled
+    ? [...symbolsByClass(ASSET_CLASS.FX), ...symbolsByClass(ASSET_CLASS.INDEX, { includePending: true })]
+    : (process.env.TWELVEDATA_API_KEY ? symbolsByClass(ASSET_CLASS.FX) : []);
   const lastFxBar = new Map();
+  const lastFxQuote = new Map(); // gerçek spot kotasyonu (MCP kanalı)
   let tdBars = null;
+  let mcpFeed = null;
+
+  // MCP spot kotasyonu: GERÇEK bid/ask — icra hattının tamamı gerçek spread görür
+  const handleMcpQuote = async (q) => {
+    eco.broker.setQuote(q.symbol, { bid: q.bid, ask: q.ask });
+    eco.sniper.recordSpread(q.symbol, q.ask - q.bid);
+    await eco.sniper.onQuote(q.symbol, q);
+    eco.shadowLedger.onPrice(q.symbol, (q.bid + q.ask) / 2);
+    profile.onSpread(q.symbol, ((q.ask - q.bid) / q.ask) * 100);
+    eco.sanitizer.touch('ctrader-mcp', q.symbol);
+    lastFxQuote.set(q.symbol, { price: (q.bid + q.ask) / 2, spread: q.ask - q.bid });
+  };
+
+  // MCP barı: gerçek kotasyon akarken sentetik kotasyon ÜRETME — yalnız
+  // bar-içi uçlarla stop/hedef çözümü + analiz beslemesi
+  const handleMcpBar = async (bar) => {
+    lastFxBar.set(bar.symbol, bar);
+    eco.shadowLedger.onPrice(bar.symbol, bar.low);
+    eco.shadowLedger.onPrice(bar.symbol, bar.high);
+    await eco.regimeDetector.onClose(bar.symbol, bar.close);
+    await mtfEngine.onTriggerBar(bar);
+  };
 
   const handleFxBar = async (bar) => {
     const spec = instrumentSpec(bar.symbol);
@@ -245,16 +271,55 @@ export async function runShadowLive({
     await mtfEngine.onTriggerBar(bar);
   };
 
-  if (fxSymbols.length > 0) {
+  if (mcp.enabled && fxSymbols.length > 0) {
+    try {
+      mcpFeed = new CTraderMcpFeed({
+        mcp,
+        symbols: fxSymbols,
+        logger,
+        onQuote: (q) => handleMcpQuote(q).catch((err) => logger.error(`[ctrader-mcp] kotasyon hatası: ${err.message}`)),
+        onBar: (bar) => handleMcpBar(bar).catch((err) => logger.error(`[ctrader-mcp] bar hatası: ${err.message}`)),
+      });
+      await mcpFeed.resolveSymbols();
+      for (const symbol of mcpFeed.symbols) {
+        try {
+          const { bars4h, bars1h, bars15 } = await mcpFeed.fetchWarmup(symbol);
+          await mtfEngine.warmup(symbol, { bars4h, bars15m: bars1h, barsTrigger: bars15 });
+          for (const b of bars15) {
+            po3.onBar(symbol, b);
+            matrix.onClose(symbol, b.close);
+            profile.onBar(symbol, b);
+          }
+          if (bars15.length) {
+            mcpFeed.seedLastEmitted(symbol, bars15.at(-1).openTime);
+            lastFxBar.set(symbol, bars15.at(-1));
+          }
+          const ctx = eco.structurer.contextOf(symbol);
+          const po3Ctx = po3.context(symbol);
+          logger.info(`[ctrader-mcp] ${symbol} başlangıç: bias=${ctx.htfBias} dol=${ctx.dolLevel ?? '—'} faz=${ctx.phase} po3=${po3Ctx.phase}`);
+        } catch (err) {
+          logger.warn(`[ctrader-mcp] ${symbol} ısınma başarısız: ${err.message}`);
+        }
+      }
+      mcpFeed.start();
+      logger.info(`[ctrader-mcp] hat aktif: ${mcpFeed.symbols.join(', ')} — gerçek bid/ask spot + M_15 barları (endeksler dahil)`);
+    } catch (err) {
+      logger.error(`[ctrader-mcp] kanal kurulamadı: ${err.message} — TD yedeğine bakılıyor`);
+      mcpFeed = null;
+    }
+  }
+
+  if (!mcpFeed && process.env.TWELVEDATA_API_KEY && fxSymbols.length > 0) {
+    const tdSymbols = fxSymbols.filter((s) => instrumentSpec(s)?.tdSymbol);
     tdBars = new TwelveDataBars({
-      symbols: fxSymbols,
+      symbols: tdSymbols,
       interval: '15M',
       pollMs: CONFIG.feed.tdBars.pollMs,
       logger,
       onBar: (bar) => handleFxBar(bar).catch((err) => logger.error(`[fx] bar hatası: ${err.message}`)),
     });
     let fxWarmupIndex = 0;
-    for (const symbol of fxSymbols) {
+    for (const symbol of tdSymbols) {
       // TD ücretsiz katman: 8 kredi/dk — sembol başına 3 tarihçe çağrısı,
       // semboller arası bekleme ile dakikalık pencere taşırılmaz (429 önlemi)
       if (fxWarmupIndex > 0) {
@@ -289,14 +354,10 @@ export async function runShadowLive({
       }
     }
     tdBars.start();
-    logger.info(`[fx] hat aktif: ${fxSymbols.join(', ')} (TD 15M barları, ${CONFIG.feed.tdBars.pollMs / 60000}dk yoklama)`);
-  } else {
-    logger.info('[fx] TWELVEDATA_API_KEY yok — FX hattı devre dışı (kripto hattı sürer)');
+    logger.info(`[fx] hat aktif: ${tdSymbols.join(', ')} (TD 15M barları, ${CONFIG.feed.tdBars.pollMs / 60000}dk yoklama)`);
+  } else if (!mcpFeed) {
+    logger.info('[fx] CTRADER_TOKEN_B64 / TWELVEDATA_API_KEY yok — FX hattı devre dışı (kripto hattı sürer)');
   }
-
-  // cTrader hazırlık teşhisi (tel protokolü sonraki sürüm — bkz. provider notu)
-  const ctrader = new CTraderProvider({ logger });
-  ctrader.start();
 
   const allSymbols = [...CONFIG.symbols.watchlist, ...fxSymbols];
 
@@ -401,6 +462,8 @@ export async function runShadowLive({
     logger.info('[ict-bot] kapanış: feed, dashboard ve ajanlar durduruluyor');
     feed.stop();
     krakenWs?.stop();
+    mcpFeed?.stop();
+    tdBars?.stop();
     dashboard.stop();
     eco.stop();
     clearInterval(dayWatch);

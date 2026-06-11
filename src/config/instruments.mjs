@@ -53,21 +53,21 @@ const SPEC = {
     assetClass: ASSET_CLASS.FX, session: SESSION.FX, source: 'twelvedata',
     pipSize: 0.0001, minOrder: 1000, lotStep: 1000, maxLeverage: 30,
     feeTakerPct: 0, feeMakerPct: 0, slippagePct: 0.002, typicalSpread: 0.00012,
-    tdSymbol: 'EUR/USD',
+    tdSymbol: 'EUR/USD', mcpSymbol: 'EURUSD',
     tfProfile: { narrative: '1H', trigger: '15M' },
   },
   GBPUSD: {
     assetClass: ASSET_CLASS.FX, session: SESSION.FX, source: 'twelvedata',
     pipSize: 0.0001, minOrder: 1000, lotStep: 1000, maxLeverage: 30,
     feeTakerPct: 0, feeMakerPct: 0, slippagePct: 0.002, typicalSpread: 0.00018,
-    tdSymbol: 'GBP/USD',
+    tdSymbol: 'GBP/USD', mcpSymbol: 'GBPUSD',
     tfProfile: { narrative: '1H', trigger: '15M' },
   },
   XAUUSD: {
     assetClass: ASSET_CLASS.FX, session: SESSION.FX, source: 'twelvedata',
     pipSize: 0.1, minOrder: 0.1, lotStep: 0.01, maxLeverage: 20,
     feeTakerPct: 0, feeMakerPct: 0, slippagePct: 0.005, typicalSpread: 0.35,
-    tdSymbol: 'XAU/USD',
+    tdSymbol: 'XAU/USD', mcpSymbol: 'XAUUSD',
     tfProfile: { narrative: '1H', trigger: '15M' },
   },
 
@@ -77,14 +77,16 @@ const SPEC = {
     pipSize: 0.25, minOrder: 0.1, lotStep: 0.1, maxLeverage: 20,
     feeTakerPct: 0, feeMakerPct: 0, slippagePct: 0.005, typicalSpread: 0.5,
     tfProfile: { narrative: '1H', trigger: '15M' },
-    pending: true, // veri kaynağı hazır olana dek watchlist'e girmez
+    mcpSymbol: 'US500',
+    pending: 'mcp', // yalnız cTrader MCP kanalı varken aktif
   },
   US100: {
     assetClass: ASSET_CLASS.INDEX, session: SESSION.FX, source: 'ctrader',
     pipSize: 0.25, minOrder: 0.1, lotStep: 0.1, maxLeverage: 20,
     feeTakerPct: 0, feeMakerPct: 0, slippagePct: 0.005, typicalSpread: 1.2,
     tfProfile: { narrative: '1H', trigger: '15M' },
-    pending: true,
+    mcpSymbol: 'NAS100', // Pepperstone US Tech 100 adı
+    pending: 'mcp',
   },
 };
 

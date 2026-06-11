@@ -99,6 +99,11 @@ export const CONFIG = Object.freeze({
       // çağrısı; semboller arası bekleme dakikalık pencereyi taşırmaz
       warmupDelayMs: 25_000,
     },
+    // cTrader Remote MCP (FX+endeks birincil kanalı; CTRADER_TOKEN_B64 ile)
+    ctraderMcp: {
+      spotPollMs: 10_000,  // gerçek bid/ask yoklaması (icra gerçekçiliği)
+      barPollMs: 60_000,   // kapanmış M_15 bar denetimi
+    },
   },
 
   analysis: {
