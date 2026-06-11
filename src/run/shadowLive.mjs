@@ -28,6 +28,7 @@ import { isMarketOpen } from '../time/marketHours.mjs';
 import { Journal } from '../persistence/journal.mjs';
 import { SetupStats } from '../signals/setupStats.mjs';
 import { TelegramNotifier } from '../signals/telegramNotifier.mjs';
+import { TelegramCommander } from '../signals/telegramCommander.mjs';
 import { DashboardServer } from '../dashboard/server.mjs';
 import { PO3Tracker } from '../analysis/po3.mjs';
 import { CorrelationMatrix, SMTDetector } from '../analysis/smt.mjs';
@@ -104,13 +105,17 @@ export async function runShadowLive({
     journal.append({ kind: 'equity', equity: point.equity, dailyPnl: eco.stateManager.get('dailyPnl') });
   });
 
-  // Sinyal sink zinciri: journal (kalıcı) + istatistik + Telegram (varsa)
+  // Sinyal sink zinciri: journal (kalıcı) + istatistik + Telegram (varsa).
+  // Telegram sink'i token varken HER ZAMAN eklenir: chat henüz bağlı değilse
+  // sessiz kalır, kullanıcı bota /start yazınca otomatik akmaya başlar.
   eco.signalHub.addSink(journal);
   eco.signalHub.addSink(stats);
   const telegram = new TelegramNotifier({ logger });
-  if (telegram.enabled) {
+  if (telegram.hasToken) {
     eco.signalHub.addSink(telegram);
-    logger.info('[telegram] bildirimler aktif');
+    logger.info(telegram.enabled
+      ? '[telegram] bildirimler aktif'
+      : '[telegram] token hazır — bota /start yazınca bildirimler başlar');
   }
 
   // Derinleştirme katmanları: PO3, korelasyon/SMT, parite karakter profili
@@ -399,6 +404,18 @@ export async function runShadowLive({
       equityCurve: equityCurve.slice(-300),
     };
   };
+  // Telegram komutçusu: /start ile otomatik bağlanır; /durum /bakiye
+  // /sinyaller /rapor komutlarıyla bot cepten sorgulanır (dashboard'sız)
+  let commander = null;
+  if (telegram.hasToken) {
+    commander = new TelegramCommander({
+      notifier: telegram,
+      statusProvider: () => snapshotProvider(),
+      logger,
+    });
+    commander.start();
+  }
+
   const dashboard = new DashboardServer({
     snapshotProvider,
     barsProvider: (symbol, tf) => mtfEngine.series(symbol, tf),
@@ -462,6 +479,7 @@ export async function runShadowLive({
     logger.info('[ict-bot] kapanış: feed, dashboard ve ajanlar durduruluyor');
     feed.stop();
     krakenWs?.stop();
+    commander?.stop();
     mcpFeed?.stop();
     tdBars?.stop();
     dashboard.stop();

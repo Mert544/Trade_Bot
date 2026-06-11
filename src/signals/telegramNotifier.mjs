@@ -42,13 +42,26 @@ export class TelegramNotifier {
     this.#config = config;
     this.#now = now;
     this.#logger = logger;
-    if (!this.enabled) {
-      logger.info('[telegram] TELEGRAM_BOT_TOKEN/CHAT_ID yok — bildirim devre dışı (dashboard + journal çalışmaya devam eder)');
+    if (!this.#token) {
+      logger.info('[telegram] TELEGRAM_BOT_TOKEN yok — bildirim devre dışı (dashboard + journal çalışmaya devam eder)');
     }
+    // Token var ama chat yok: commander /start ile geç-bağlar, burada log gereksiz
   }
 
   get enabled() {
     return Boolean(this.#token && this.#chatId);
+  }
+
+  get hasToken() {
+    return Boolean(this.#token);
+  }
+
+  /**
+   * Geç bağlama: TelegramCommander /start aldığında chat ID'yi buraya
+   * yazar — kullanıcının elle getUpdates kazısı yapması gerekmez.
+   */
+  setChatId(chatId) {
+    this.#chatId = String(chatId);
   }
 
   /** Serbest metin (günlük rapor vb.) — aynı kuyruk/limit disiplinine tabi. */
