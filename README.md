@@ -141,6 +141,33 @@ Bot **işlem açmaz** — sinyal üretir ve iletir:
 - **Maliyetsiz simülasyon yasak:** Gölge defter spread + komisyon + slippage içerir.
 - **Terfi kapısı:** P95 günlük DD ≥ %5 olan konfigürasyon canlıya alınamaz; 30 işlem altında parametre değişmez.
 
+## 7/24 Sunucu Kurulumu (öğrenci bütçesi)
+
+Bot sıfır bağımlılıklı tek Node sürecidir (~100-150MB RAM) — en küçük
+ücretsiz sunucuda bile rahat çalışır. Seçenekler (önerilen sırayla):
+
+1. **Oracle Cloud Always Free** — kalıcı ücretsiz VPS (4 ARM çekirdek/24GB'a
+   kadar). Kayıtta kart doğrulaması ister, ücret kesmez. Ubuntu 22.04+ seçin.
+2. **Evdeki eski bilgisayar / Raspberry Pi** — gerçek sıfır maliyet; tek şart
+   açık kalması.
+3. Google Cloud e2-micro (always free) / herhangi bir ucuz VPS.
+
+Kurulum (Ubuntu/Debian, ~5 dakika):
+
+```bash
+git clone <repo-url> ~/Trade_Bot && cd ~/Trade_Bot
+cp .env.example .env && nano .env     # token/anahtarları doldur
+bash deploy/setup.sh                  # Node kurar, testleri koşar, systemd servisi kurar
+```
+
+Servis çökerse 10 sn'de yeniden başlar, sunucu reboot'unda otomatik kalkar.
+Loglar: `journalctl -u ictbot -f`. Bakiye/journal `state/` altında kalıcıdır.
+
+**Güvenlik:** `.env` asla commit edilmez (`.gitignore`); sunucuda dashboard
+varsayılan olarak yalnız `127.0.0.1` dinler — uzaktan bakmak için SSH tüneli:
+`ssh -L 8717:localhost:8717 kullanici@sunucu` → `http://localhost:8717`.
+Dashboard'u internete açmayın (salt-okunur olsa da hesap/strateji verisi sızdırır).
+
 ## Maliyet Notu
 
 Sistem bilinçli olarak **sıfır bütçeyle** çalışacak şekilde kuruludur:

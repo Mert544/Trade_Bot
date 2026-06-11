@@ -1,0 +1,22 @@
+[Unit]
+Description=ICT Bot V5 - golge mod sinyal botu (calismaz ise yeniden baslat)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# setup.sh bu alanlari kurulum yoluna gore doldurur
+User=__USER__
+WorkingDirectory=__APPDIR__
+# Node >=20: --env-file ile .env okunur (harici bagimlilik yok)
+ExecStart=__NODE__ --env-file=__APPDIR__/.env src/run/shadowLive.mjs
+Restart=always
+RestartSec=10
+# Bellek emniyeti (1GB VPS'te bile rahat calisir; bot ~100-150MB kullanir)
+MemoryMax=512M
+# Loglar journald'a: journalctl -u ictbot -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

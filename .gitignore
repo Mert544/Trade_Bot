@@ -2,6 +2,7 @@ node_modules/
 *.log
 .env
 .env.*
+!.env.example
 state/
 *.state.json
 coverage/
