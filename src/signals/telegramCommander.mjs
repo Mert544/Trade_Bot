@@ -28,6 +28,8 @@ export class TelegramCommander {
   #offset = 0;
   #chatId = null;
   #running = false;
+  #firstPollOk = false;
+  #pollIntervalMs;
 
   telemetry = { updates: 0, commands: 0, foreignIgnored: 0, pollErrors: 0 };
 
@@ -36,10 +38,12 @@ export class TelegramCommander {
     notifier,
     statusProvider = () => ({}),
     chatStorePath = 'state/telegram-chat.json',
+    pollIntervalMs = 2000,
     fetchImpl = fetch,
     logger = console,
     now = () => Date.now(),
   } = {}) {
+    this.#pollIntervalMs = pollIntervalMs;
     this.#token = token;
     this.#notifier = notifier;
     this.#statusProvider = statusProvider;
@@ -86,8 +90,13 @@ export class TelegramCommander {
     this.#logger.info(`[telegram] sohbet bağlandı: ${chat.username ?? chat.id} — sinyaller artık Telegram'a akacak`);
   }
 
-  /** Tek yoklama turu (test edilebilirlik için ayrık). */
-  async pollOnce({ timeoutSec = 25 } = {}) {
+  /**
+   * Tek yoklama turu (test edilebilirlik için ayrık).
+   * Varsayılan KISA yoklama (timeout=0): bazı proxy'ler/kısıtlı ağlar uzun
+   * yoklamayı sessizce bozar — kısa yoklama her ortamda çalışır ve token'ı
+   * paylaşan başka bir tüketici varsa yarışı daha sık kazanır.
+   */
+  async pollOnce({ timeoutSec = 0 } = {}) {
     let data;
     try {
       const res = await this.#fetchImpl(
@@ -97,11 +106,27 @@ export class TelegramCommander {
       data = await res.json();
     } catch (err) {
       this.telemetry.pollErrors += 1;
+      if (this.telemetry.pollErrors % 10 === 1) {
+        this.#logger.warn(`[telegram] yoklama hatası (#${this.telemetry.pollErrors}): ${err.message}`);
+      }
       throw err;
     }
     if (!data.ok) {
       this.telemetry.pollErrors += 1;
+      if (data.error_code === 409) {
+        // Aynı token'ı KULLANAN BAŞKA BİR TÜKETİCİ var (webhook veya başka
+        // bir getUpdates istemcisi) — mesajları o yutuyor demektir.
+        this.#logger.error('[telegram] 409 ÇAKIŞMA: bu token başka bir yerde de dinleniyor! '
+          + 'BotFather /revoke ile token yenileyin ve yalnız bota verin.');
+      }
       return;
+    }
+    if (!this.#firstPollOk) {
+      this.#firstPollOk = true;
+      this.#logger.info('[telegram] getUpdates kanalı doğrulandı (kısa yoklama)');
+    }
+    if ((data.result ?? []).length > 0) {
+      this.#logger.info(`[telegram] ${data.result.length} güncelleme alındı`);
     }
     for (const update of data.result ?? []) {
       this.#offset = Math.max(this.#offset, update.update_id + 1);
@@ -238,9 +263,9 @@ export class TelegramCommander {
       while (this.#running) {
         try {
           await this.pollOnce();
+          await new Promise((r) => setTimeout(r, this.#pollIntervalMs));
         } catch {
-          // ağ hatası: kısa bekleyip sürdür (uzun yoklama doğal tempoyu verir)
-          await new Promise((r) => setTimeout(r, 5000));
+          await new Promise((r) => setTimeout(r, 5000)); // ağ hatası: kısa bekle
         }
       }
     };
